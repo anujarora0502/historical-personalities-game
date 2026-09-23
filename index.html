@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <title>The Grand Museum</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="app"></main>
+    <section id="hud" aria-label="Game information">
+
+      <div class="location-card">
+        <span class="location-label" id="location-label">YOU ARE EXPLORING</span>
+        <strong id="room-name">The Arrival Hall</strong>
+        <span id="room-detail">Explore the museum and meet historical personalities.</span>
+      </div>
+      <div class="crosshair" aria-hidden="true"></div>
+      <aside class="controls-card">
+        <span><b>Arrows</b> Walk</span>
+        <span><b>Space</b> Jump</span>
+        <span><b>Drag</b> Look</span>
+      </aside>
+    </section>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+# Dependencies & build output
+node_modules/
+dist/
+
+# Local secrets (only .env.example is committed)
+.env
+.env.*
+!.env.example
+
+# Blender backups and large work-in-progress scenes (too big for git)
+*.blend1
+realistic-characters-wip.blend
+
+# Unused/old models kept locally, not deployed
+_archive/
+
+.DS_Store

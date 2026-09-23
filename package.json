@@ -1,0 +1,18 @@
+{
+  "name": "freedom-fighter-room",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "gsap": "^3.15.0",
+    "sarvam-conv-ai-sdk": "^0.0.42",
+    "three": "^0.185.1",
+    "vite": "^8.2.1"
+  }
+}
