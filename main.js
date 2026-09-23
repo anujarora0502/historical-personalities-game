@@ -40,7 +40,7 @@ controls.maxDistance = 100;
 // Set target just slightly in front of the camera so dragging rotates the camera in place
 controls.target.set(0, 2.2, 25.99);
 
-const clock = new THREE.Clock();
+const timer = new THREE.Timer();
 const characters = [];
 const elevationZones = [];
 const galleryDoors = [];
@@ -172,10 +172,10 @@ function surfaceHeightAt(x, z) {
   return height;
 }
 
+// Point lights don't cast shadows here: VSM shadow maps don't support them (three.js skips them).
 function galleryLight(x, z, color = '#fff0c2') {
   const light = new THREE.PointLight(color, 7, 12, 2);
   light.position.set(x, 4.4, z);
-  light.castShadow = true;
   scene.add(light);
 }
 
@@ -412,12 +412,135 @@ const guideExhibit = {
 
 const TILE_OFFSET = 0.175; // The checkerboard hall tiles sit this far above the base terrain.
 
+// Which parts of each GLB belong to which body segment. Names follow three.js'
+// sanitising, which drops dots ("Gandhi_Arm.001" -> "Gandhi_Arm001").
+const RIGS = {
+  guide: {
+    facing: 1, // the face points along +Z in the model
+    head: /^Guide_(Head|Brow|Eye|Iris|Hair|Earring|Mouth|Nose)/,
+    leftArm: /^Guide_(Arm_L|Hand_L|Finger_L_\d|Thumb_L)$/,
+    rightArm: /^Guide_(Arm_R|Hand_R|Finger_R_\d|Thumb_R)$/,
+    leftLeg: /^Guide_(Leg|Shoe)_L$/,
+    rightLeg: /^Guide_(Leg|Shoe)_R$/,
+    lowerBody: /^Guide_Skirt$/,
+    eyes: /^Guide_(Eye|Iris)_[LR]$/,
+    torso: 'Guide_Torso',
+    mouth: 'Guide_Mouth',
+    armRest: 0.05,
+  },
+  gandhi: {
+    facing: -1,
+    head: /^Gandhi_(Head|Ear|Eye|Glasses|Iris|Mouth|Nose)/,
+    leftArm: /^Gandhi_(Arm|Hand|Finger_L_\d|Thumb_L)$/,
+    rightArm: /^Gandhi_(Arm001|Hand001|Finger_R_\d|Thumb_R|Stick)$/,
+    leftLeg: /^Gandhi_(Left_Leg|Shoe_L)$/,
+    rightLeg: /^Gandhi_(Right_Leg|Shoe_R)$/,
+    lowerBody: /^Gandhi_Dhoti$/,
+    eyes: /^Gandhi_(Eye|Iris)_[LR]$/,
+    torso: 'Gandhi_Torso',
+    mouth: 'Gandhi_Mouth',
+    armRest: 0.08,
+    rightArmSwing: 0.3, // the right hand holds his walking stick
+    gestureArms: ['left'],
+  },
+  einstein: {
+    facing: -1,
+    head: /^(Head|Cheek_|Ear_|Eye_|Eyebrow_|ForeheadLine_|Glasses|Hair_|HairStrand_|Iris_|LowerEyelid_|UpperEyelid_|Moustache|Mouth|Nose|SweptHair_)/,
+    leftArm: /^(Left_Arm|LCuff|Left_Hand|Finger_L_\d|Thumb_L)$/,
+    rightArm: /^(Right_Arm|RCuff|Right_Hand|Finger_R_\d|Thumb_R)$/,
+    leftLeg: /^(Left_Leg|Left_Shoe|Sole_L|Lace_L_\d)$/,
+    rightLeg: /^(Right_Leg|Right_Shoe|Sole_R|Lace_R_\d)$/,
+    eyes: /^(Eye|Iris)_[LR]$/,
+    torso: 'Torso',
+    mouth: 'Mouth',
+    armRest: 0.08,
+  },
+};
+
+/**
+ * Splits a character made of separate meshes into a simple joint hierarchy:
+ * hips -> upper body -> head / shoulders, plus hip joints for the legs.
+ * Each joint is a Group placed where the real joint would be, so rotating it
+ * swings the limb from the shoulder or hip instead of around the limb's middle.
+ */
+function buildRig(model, spec) {
+  model.updateMatrixWorld(true);
+  const meshes = [];
+  model.traverse((child) => { if (child.isMesh) meshes.push(child); });
+  const container = meshes[0].parent;
+  const pick = (pattern) => (pattern ? meshes.filter((mesh) => pattern.test(mesh.name)) : []);
+  const boundsOf = (objects) => objects.reduce((box, object) => box.expandByObject(object), new THREE.Box3());
+  const makeJoint = (parent, worldPoint, objects) => {
+    const joint = new THREE.Group();
+    parent.add(joint);
+    parent.updateMatrixWorld(true);
+    joint.position.copy(parent.worldToLocal(worldPoint.clone()));
+    joint.updateMatrixWorld(true);
+    for (const object of objects) joint.attach(object);
+    joint.userData.restPosition = joint.position.clone();
+    return joint;
+  };
+
+  const groups = {
+    head: pick(spec.head),
+    leftArm: pick(spec.leftArm),
+    rightArm: pick(spec.rightArm),
+    leftLeg: pick(spec.leftLeg),
+    rightLeg: pick(spec.rightLeg),
+  };
+  const lowerBody = new Set([...pick(spec.lowerBody), ...groups.leftLeg, ...groups.rightLeg]);
+  const upperBodyParts = meshes.filter((mesh) => !lowerBody.has(mesh));
+
+  const hipPoint = (legParts) => {
+    const box = boundsOf(legParts);
+    const center = box.getCenter(new THREE.Vector3());
+    return new THREE.Vector3(center.x, box.max.y, center.z);
+  };
+  const shoulderPoint = (armParts) => {
+    const sleeve = armParts.filter((part) => /Arm/.test(part.name));
+    const box = boundsOf(sleeve.length ? sleeve : armParts);
+    const center = box.getCenter(new THREE.Vector3());
+    return new THREE.Vector3(center.x, box.max.y - (box.max.y - box.min.y) * 0.08, center.z);
+  };
+  const leftHip = hipPoint(groups.leftLeg);
+  const rightHip = hipPoint(groups.rightLeg);
+  const bodyCenter = boundsOf(upperBodyParts).getCenter(new THREE.Vector3());
+  const waistPoint = new THREE.Vector3(bodyCenter.x, (leftHip.y + rightHip.y) / 2, bodyCenter.z);
+  const headMesh = groups.head.find((part) => /Head$/.test(part.name)) || groups.head[0];
+  const headBox = boundsOf([headMesh]);
+  const neckPoint = headBox.getCenter(new THREE.Vector3());
+  neckPoint.y = headBox.min.y + (headBox.max.y - headBox.min.y) * 0.12;
+  const leftShoulder = shoulderPoint(groups.leftArm);
+  const rightShoulder = shoulderPoint(groups.rightArm);
+
+  const rig = {
+    container,
+    containerRestY: container.position.y,
+    facing: spec.facing,
+    armRest: spec.armRest ?? 0.08,
+    rightArmSwing: spec.rightArmSwing ?? 1,
+    gestureArms: spec.gestureArms || ['left', 'right'],
+    leftLeg: makeJoint(container, leftHip, groups.leftLeg),
+    rightLeg: makeJoint(container, rightHip, groups.rightLeg),
+  };
+  rig.upperBody = makeJoint(container, waistPoint, upperBodyParts);
+  rig.head = makeJoint(rig.upperBody, neckPoint, groups.head);
+  rig.head.rotation.order = 'YXZ';
+  rig.leftArm = makeJoint(rig.upperBody, leftShoulder, groups.leftArm);
+  rig.rightArm = makeJoint(rig.upperBody, rightShoulder, groups.rightArm);
+  rig.torso = container.getObjectByName(spec.torso);
+  rig.torsoRestScale = rig.torso?.scale.clone();
+  rig.mouth = container.getObjectByName(spec.mouth);
+  rig.mouthRestScaleY = rig.mouth?.scale.y ?? 1;
+  rig.eyes = pick(spec.eyes).map((eye) => ({ eye, restScaleY: eye.scale.y }));
+  return rig;
+}
+
 /**
  * Loads a custom character GLB, scales it to a common height, places it at (x, z)
  * and registers it for proximity conversations and procedural animation.
- * `partNames` maps animation slots (head, mouth, leftArm, ...) to node names in the GLB.
  */
-function loadCharacter({ url, exhibit, x, y = 0, z, roam, partNames, attachHandsToArms = false, onLoad }) {
+function loadCharacter({ url, exhibit, rig, x, y = 0, z, roam, onLoad }) {
   new GLTFLoader().load(url, (gltf) => {
     const model = gltf.scene;
     model.traverse((child) => {
@@ -437,73 +560,40 @@ function loadCharacter({ url, exhibit, x, y = 0, z, roam, partNames, attachHands
     model.userData.exhibit = exhibit;
     scene.add(model);
 
-    const parts = {};
-    for (const [slot, name] of Object.entries(partNames)) {
-      const part = model.getObjectByName(name);
-      if (part) parts[slot] = part;
-    }
-    // Parent the hands to the sleeves so they swing with the arms instead of
-    // staying behind (Object3D.attach keeps their current world transform).
-    if (attachHandsToArms) {
-      model.updateMatrixWorld(true);
-      if (parts.leftArm && parts.leftHand) parts.leftArm.attach(parts.leftHand);
-      if (parts.rightArm && parts.rightHand) parts.rightArm.attach(parts.rightHand);
-    }
-
     const character = registerCharacter(model, exhibit);
     character.roam = roam;
-    character.parts = parts;
-    character.mouthBaseScaleY = parts.mouth?.scale.y || 0.025;
+    character.rig = buildRig(model, rig);
     onLoad?.(model);
   }, undefined, (error) => console.error(`Unable to load ${exhibit.name} model (${url}):`, error));
 }
 
 loadCharacter({
-  url: assetUrl('einstein-custom.glb?v=2'),
+  url: assetUrl('einstein-custom.glb?v=4'),
   exhibit: einsteinExhibit,
+  rig: RIGS.einstein,
   x: -4,
   y: TILE_OFFSET,
   z: -26,
   roam: true,
-  partNames: {
-    head: 'Head', mouth: 'Mouth',
-    leftArm: 'Left_Arm', rightArm: 'Right_Arm',
-    leftLeg: 'Left_Leg', rightLeg: 'Right_Leg',
-    leftShoe: 'Left_Shoe', rightShoe: 'Right_Shoe',
-    leftHand: 'Left_Hand', rightHand: 'Right_Hand',
-  },
 });
 
 loadCharacter({
-  url: assetUrl('gandhi-custom.glb?v=2'),
+  url: assetUrl('gandhi-custom.glb?v=4'),
   exhibit: gandhiExhibit,
+  rig: RIGS.gandhi,
   x: 4,
   y: TILE_OFFSET,
   z: -26,
   roam: true,
-  partNames: {
-    head: 'Gandhi_Head', mouth: 'Gandhi_Mouth',
-    leftArm: 'Gandhi_Arm', rightArm: 'Gandhi_Arm.001',
-    leftLeg: 'Gandhi_Left_Leg', rightLeg: 'Gandhi_Right_Leg',
-    leftShoe: 'Gandhi_Shoe_L', rightShoe: 'Gandhi_Shoe_R',
-    rightHand: 'Gandhi_Hand.001', stick: 'Gandhi_Stick',
-  },
 });
 
 loadCharacter({
-  url: assetUrl('guide-custom.glb?v=2'),
+  url: assetUrl('guide-custom.glb?v=4'),
   exhibit: guideExhibit,
+  rig: RIGS.guide,
   x: -5.5,
   z: 0.8,
   roam: false,
-  attachHandsToArms: true,
-  partNames: {
-    head: 'Guide_Head', mouth: 'Guide_Mouth',
-    leftArm: 'Guide_Arm_L', rightArm: 'Guide_Arm_R',
-    leftLeg: 'Guide_Leg_L', rightLeg: 'Guide_Leg_R',
-    leftShoe: 'Guide_Shoe_L', rightShoe: 'Guide_Shoe_R',
-    leftHand: 'Guide_Hand_L', rightHand: 'Guide_Hand_R',
-  },
   onLoad: addInfoDesk,
 });
 
@@ -576,15 +666,27 @@ function registerCharacter(root, exhibit) {
     exhibit,
     position,
     baseY: root.position.y,
-    talkOffset: Math.random() * 4,
-    parts: {},
+    talkOffset: Math.random() * 10,
+    rig: null,
     motionState: 'idle',
     roam: false,
     roamCenter: position.clone(),
     roamTarget: new THREE.Vector3(),
-    roamWait: 0,
-    roamSpeed: 0.65,
-    mouthBaseScaleY: 0.025,
+    hasRoamTarget: false,
+    roamWait: 1 + Math.random() * 2,
+    roamSpeed: 0.6,
+    speed: 0,
+    anim: {
+      walk: 0,
+      stridePhase: 0,
+      blinkTimer: 1 + Math.random() * 3,
+      blinkStart: -1,
+      gestureTimer: 0,
+      gestureTarget: { left: 0, right: 0, open: 0 },
+      gesture: { left: 0, right: 0, open: 0 },
+      head: { yaw: 0, pitch: 0, roll: 0 },
+      mouth: 0,
+    },
   };
   root.userData.character = character;
   characters.push(character);
@@ -698,76 +800,182 @@ async function startSarvamConversation() {
 const forward = new THREE.Vector3();
 const sideways = new THREE.Vector3();
 const visitorPosition = new THREE.Vector3();
+const { damp } = THREE.MathUtils;
+const lookTarget = new THREE.Vector3();
+const headWorld = new THREE.Vector3();
+
+function angleDifference(target, current) {
+  const difference = target - current;
+  return Math.atan2(Math.sin(difference), Math.cos(difference));
+}
+
+function turnToward(root, desiredRotation, delta, rate) {
+  root.rotation.y += angleDifference(desiredRotation, root.rotation.y) * Math.min(delta * rate, 1);
+}
+
+// Speech gestures: how far each arm lifts forward and how open the arms are.
+const TALK_GESTURES = [
+  { left: 0, right: 0, open: 0.05 },
+  { left: 0, right: 0.55, open: 0.12 },
+  { left: 0.5, right: 0, open: 0.12 },
+  { left: 0.35, right: 0.35, open: 0.3 },
+  { left: 0, right: 0.8, open: 0.2 },
+  { left: 0.25, right: 0.15, open: 0.4 },
+];
+
 function updateCharacters(time, delta) {
   visitorPosition.copy(camera.position);
   const smoothing = sarvamTargetLevel > sarvamOutputLevel ? 1 - Math.exp(-delta * 11) : 1 - Math.exp(-delta * 7);
   sarvamOutputLevel = THREE.MathUtils.lerp(sarvamOutputLevel, sarvamTargetLevel, smoothing);
   for (const character of characters) {
-    const { root, baseY, talkOffset } = character;
+    const { root, exhibit } = character;
     root.getWorldPosition(character.position);
     const distance = Math.hypot(character.position.x - visitorPosition.x, character.position.z - visitorPosition.z);
-    const interactionRadius = character.exhibit.proximityRadius || 4.4;
-    const isInProximity = distance <= interactionRadius;
+    const isInProximity = distance <= (exhibit.proximityRadius || 4.4);
     const isRoaming = character.roam && (!isInProximity || conversationDismissed) && !sarvamAgent && !sarvamStarting;
-    let isWalking = false;
+    const faceOffset = exhibit.faceOffset || 0;
+
+    // Wander: pause, pick a nearby spot, turn toward it, then ease into walking.
+    let targetSpeed = 0;
     if (isRoaming) {
       if (character.roamWait > 0) {
         character.roamWait -= delta;
+      } else if (!character.hasRoamTarget) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 1.5 + Math.random() * 2.3;
+        character.roamTarget.set(
+          character.roamCenter.x + Math.cos(angle) * radius,
+          root.position.y,
+          character.roamCenter.z + Math.sin(angle) * radius,
+        );
+        character.hasRoamTarget = true;
       } else {
-        if (!character.roamTarget.lengthSq() || Math.hypot(root.position.x - character.roamTarget.x, root.position.z - character.roamTarget.z) < 0.25) {
-          const angle = Math.random() * Math.PI * 2;
-          const radius = 1.5 + Math.random() * 2.3;
-          character.roamTarget.set(
-            character.roamCenter.x + Math.cos(angle) * radius,
-            root.position.y,
-            character.roamCenter.z + Math.sin(angle) * radius,
-          );
-          character.roamWait = 0.4 + Math.random() * 1.4;
+        const offsetX = character.roamTarget.x - root.position.x;
+        const offsetZ = character.roamTarget.z - root.position.z;
+        const targetDistance = Math.hypot(offsetX, offsetZ);
+        if (targetDistance < 0.15) {
+          character.hasRoamTarget = false;
+          character.roamWait = 1.5 + Math.random() * 3.5;
         } else {
-          const offsetX = character.roamTarget.x - root.position.x;
-          const offsetZ = character.roamTarget.z - root.position.z;
-          const targetDistance = Math.hypot(offsetX, offsetZ);
-          const step = Math.min(character.roamSpeed * delta, targetDistance);
-          root.position.x += (offsetX / targetDistance) * step;
-          root.position.z += (offsetZ / targetDistance) * step;
-          isWalking = step > 0;
+          const heading = Math.atan2(offsetX, offsetZ) + faceOffset;
+          turnToward(root, heading, delta, 3);
+          const alignment = Math.max(0, Math.cos(angleDifference(heading, root.rotation.y)));
+          targetSpeed = character.roamSpeed * alignment ** 2 * Math.min(1, targetDistance / 0.5);
         }
       }
     }
-    root.position.y = THREE.MathUtils.lerp(root.position.y, baseY + surfaceHeightAt(root.position.x, root.position.z), Math.min(delta * 5, 1));
-    if (distance < (character.exhibit.isGuide ? 12 : 6)) {
-      const desiredRotation = Math.atan2(visitorPosition.x - character.position.x, visitorPosition.z - character.position.z) + (character.exhibit.faceOffset || 0);
-      let turn = desiredRotation - root.rotation.y;
-      turn = Math.atan2(Math.sin(turn), Math.cos(turn));
-      root.rotation.y += turn * Math.min(delta * 4.5, 1);
-    } else if (isWalking) {
-      const desiredRotation = Math.atan2(character.roamTarget.x - root.position.x, character.roamTarget.z - root.position.z) + (character.exhibit.faceOffset || 0);
-      let turn = desiredRotation - root.rotation.y;
-      turn = Math.atan2(Math.sin(turn), Math.cos(turn));
-      root.rotation.y += turn * Math.min(delta * 4.5, 1);
+    character.speed = damp(character.speed, targetSpeed, 4, delta);
+    if (character.hasRoamTarget && character.speed > 0.001) {
+      const offsetX = character.roamTarget.x - root.position.x;
+      const offsetZ = character.roamTarget.z - root.position.z;
+      const targetDistance = Math.hypot(offsetX, offsetZ) || 1;
+      const step = Math.min(character.speed * delta, targetDistance);
+      root.position.x += (offsetX / targetDistance) * step;
+      root.position.z += (offsetZ / targetDistance) * step;
+    }
+    root.position.y = THREE.MathUtils.lerp(root.position.y, character.baseY + surfaceHeightAt(root.position.x, root.position.z), Math.min(delta * 5, 1));
+
+    // When the visitor is close and the character is standing, turn the body
+    // slowly toward them; the head (below) turns faster and leads the body.
+    if (character.speed < 0.15 && distance < (exhibit.isGuide ? 12 : 6)) {
+      const towardVisitor = Math.atan2(visitorPosition.x - character.position.x, visitorPosition.z - character.position.z) + faceOffset;
+      turnToward(root, towardVisitor, delta, 1.6);
     }
 
-    const { parts } = character;
-    if (!parts.head || !parts.mouth) continue;
-    const isSpeaking = character.motionState === 'speaking';
-    const isListening = character.motionState === 'listening';
-    const gesture = Math.sin(time * (isSpeaking ? 7 : 2.2) + talkOffset);
-    const armGesture = isWalking ? gesture * 0.08 : 0;
-    const stride = isWalking ? gesture * 0.16 : 0;
-    const mouthLevel = isSpeaking ? Math.max(sarvamOutputLevel, 0.18) : 0;
-    parts.head.rotation.x = isSpeaking ? gesture * 0.05 : isListening ? Math.abs(gesture) * 0.035 : 0;
-    parts.head.rotation.z = isListening ? gesture * 0.025 : 0;
-    if (parts.leftArm) parts.leftArm.rotation.z = -0.16 + armGesture;
-    if (parts.rightArm) parts.rightArm.rotation.z = 0.16 - armGesture;
-    if (parts.leftLeg) parts.leftLeg.rotation.x = stride;
-    if (parts.rightLeg) parts.rightLeg.rotation.x = -stride;
-    if (parts.leftShoe) parts.leftShoe.rotation.x = stride;
-    if (parts.rightShoe) parts.rightShoe.rotation.x = -stride;
-    if (parts.leftHand) parts.leftHand.rotation.z = isWalking ? gesture * 0.08 : 0;
-    if (parts.rightHand) parts.rightHand.rotation.z = isWalking ? -gesture * 0.08 : 0;
-    if (parts.stick) parts.stick.rotation.z = isWalking ? -gesture * 0.06 : 0;
-    parts.mouth.scale.y = character.mouthBaseScaleY * (1 + mouthLevel * 1.5);
+    if (character.rig) animateCharacter(character, time, delta, distance);
   }
+}
+
+function animateCharacter(character, time, delta, distance) {
+  const { rig, anim } = character;
+  const f = rig.facing;
+  const t = time + character.talkOffset;
+  const isSpeaking = character.motionState === 'speaking';
+  const isListening = character.motionState === 'listening';
+
+  // --- Walk cycle -----------------------------------------------------------
+  anim.walk = damp(anim.walk, THREE.MathUtils.clamp(character.speed / character.roamSpeed, 0, 1), 6, delta);
+  anim.stridePhase += character.speed * delta * 7;
+  const stride = Math.sin(anim.stridePhase) * anim.walk;
+  const bounce = (Math.abs(Math.cos(anim.stridePhase)) - 0.6) * anim.walk;
+  const idle = 1 - anim.walk;
+
+  // Rotating a joint by -f * angle swings its limb forward (toward the face).
+  rig.leftLeg.rotation.x = -f * stride * 0.5;
+  rig.rightLeg.rotation.x = f * stride * 0.5;
+  rig.container.position.y = rig.containerRestY + bounce * 0.07;
+
+  // --- Upper body: breathing, weight shift, counter-twist -------------------
+  const breath = Math.sin(t * 1.6);
+  if (rig.torso) {
+    rig.torso.scale.set(
+      rig.torsoRestScale.x * (1 + breath * 0.012),
+      rig.torsoRestScale.y * (1 + breath * 0.006),
+      rig.torsoRestScale.z * (1 + breath * 0.02),
+    );
+  }
+  rig.upperBody.position.y = rig.upperBody.userData.restPosition.y + breath * 0.008;
+  rig.upperBody.rotation.z = Math.sin(t * 0.43) * 0.022 * idle + stride * 0.025;
+  rig.upperBody.rotation.y = -stride * 0.07;
+  rig.upperBody.rotation.x = -f * (0.05 * anim.walk + (isSpeaking ? Math.sin(t * 1.3) * 0.015 : 0));
+
+  // --- Arms: swing opposite to the legs, gesture while talking -------------
+  anim.gestureTimer -= delta;
+  if (anim.gestureTimer <= 0) {
+    const choice = isSpeaking ? TALK_GESTURES[Math.floor(Math.random() * TALK_GESTURES.length)] : { left: 0, right: 0, open: 0 };
+    anim.gestureTarget = {
+      left: rig.gestureArms.includes('left') ? choice.left : 0,
+      right: rig.gestureArms.includes('right') ? choice.right : 0,
+      open: choice.open,
+    };
+    anim.gestureTimer = isSpeaking ? 0.9 + Math.random() * 1.6 : 0.3;
+  }
+  for (const side of ['left', 'right', 'open']) {
+    anim.gesture[side] = damp(anim.gesture[side], anim.gestureTarget[side], 3.2, delta);
+  }
+  const beat = isSpeaking ? Math.sin(t * 5.5) * 0.06 * (0.4 + sarvamOutputLevel) : 0;
+  const sway = Math.sin(t * 0.9) * 0.02 * idle;
+  const leftForward = -stride * 0.4 + anim.gesture.left * (1 + beat) + sway;
+  const rightForward = stride * 0.4 * rig.rightArmSwing + anim.gesture.right * (1 + beat) - sway;
+  rig.leftArm.rotation.x = -f * leftForward;
+  rig.rightArm.rotation.x = -f * rightForward;
+  rig.leftArm.rotation.z = -(rig.armRest + anim.gesture.open * 0.5 + 0.02 * anim.walk);
+  rig.rightArm.rotation.z = rig.armRest + anim.gesture.open * 0.5 + 0.02 * anim.walk;
+
+  // --- Head: look at the visitor, nod while talking, tilt while listening ---
+  let yaw = 0;
+  let pitch = 0;
+  if (distance < 9) {
+    rig.head.getWorldPosition(headWorld);
+    lookTarget.copy(visitorPosition);
+    character.root.worldToLocal(lookTarget);
+    character.root.worldToLocal(headWorld);
+    const dx = lookTarget.x - headWorld.x;
+    const dz = lookTarget.z - headWorld.z;
+    yaw = THREE.MathUtils.clamp(Math.atan2(f * dx, f * dz) - rig.upperBody.rotation.y, -0.8, 0.8);
+    pitch = THREE.MathUtils.clamp(Math.atan2(lookTarget.y - headWorld.y, Math.hypot(dx, dz)), -0.3, 0.3);
+  }
+  const nod = isSpeaking ? sarvamOutputLevel * 0.07 + Math.sin(t * 2.6) * 0.03 : isListening ? Math.max(0, Math.sin(t * 1.1)) * 0.05 : 0;
+  anim.head.yaw = damp(anim.head.yaw, yaw + Math.sin(t * 0.37) * 0.04 * idle, 5, delta);
+  anim.head.pitch = damp(anim.head.pitch, pitch - nod, 5, delta);
+  anim.head.roll = damp(anim.head.roll, isListening ? 0.07 : Math.sin(t * 0.5) * 0.015, 3, delta);
+  rig.head.rotation.y = anim.head.yaw;
+  rig.head.rotation.x = -f * anim.head.pitch;
+  rig.head.rotation.z = anim.head.roll;
+
+  // --- Blinking -------------------------------------------------------------
+  anim.blinkTimer -= delta;
+  if (anim.blinkTimer <= 0) {
+    anim.blinkStart = time;
+    anim.blinkTimer = 2 + Math.random() * 4 + (Math.random() < 0.2 ? -1.7 : 0); // occasional double blink
+  }
+  const blinkProgress = (time - anim.blinkStart) / 0.15;
+  const blink = blinkProgress >= 0 && blinkProgress < 1 ? Math.sin(blinkProgress * Math.PI) : 0;
+  for (const { eye, restScaleY } of rig.eyes) eye.scale.y = restScaleY * (1 - blink * 0.9);
+
+  // --- Mouth follows the agent's audio level --------------------------------
+  anim.mouth = damp(anim.mouth, isSpeaking ? Math.max(sarvamOutputLevel, 0.15) : 0, 18, delta);
+  if (rig.mouth) rig.mouth.scale.y = rig.mouthRestScaleY * (1 + anim.mouth * 2.2);
 }
 
 function updateGalleryDoors(delta) {
@@ -780,8 +988,9 @@ function updateGalleryDoors(delta) {
 
 function animate() {
   requestAnimationFrame(animate);
-  const delta = Math.min(clock.getDelta(), 0.05);
-  const elapsed = clock.elapsedTime;
+  timer.update();
+  const delta = Math.min(timer.getDelta(), 0.05);
+  const elapsed = timer.getElapsed();
   camera.getWorldDirection(forward);
   forward.y = 0;
   forward.normalize();
