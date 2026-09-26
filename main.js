@@ -1354,17 +1354,19 @@ const START_POSITION = new THREE.Vector3(0, 2.2, 26);
 const START_TARGET = new THREE.Vector3(0, 2.2, 25.99);
 const introLook = new THREE.Vector3();
 
+// Title shot: a slow sway in front of the museum, always facing the entrance
+// (never behind the building), so the glide to the gate is short and direct.
 function updateTitleCamera(elapsed) {
-  const angle = elapsed * 0.05 + 0.6;
-  camera.position.set(Math.sin(angle) * 36, 12.5 + Math.sin(elapsed * 0.13) * 1.5, -14 + Math.cos(angle) * 40);
-  camera.lookAt(0, 4, -18);
+  const sway = Math.sin(elapsed * 0.12) * 0.35; // about ±20° either side of the entrance
+  camera.position.set(Math.sin(sway) * 22, 7.5 + Math.sin(elapsed * 0.17) * 0.8, 30 - (1 - Math.cos(sway)) * 22);
+  camera.lookAt(0, 4.5, -10);
 }
 
 function updateIntroGlide(delta) {
-  introProgress = Math.min(1, introProgress + delta / 2.6);
+  introProgress = Math.min(1, introProgress + delta / 2);
   const eased = introProgress < 0.5 ? 4 * introProgress ** 3 : 1 - (-2 * introProgress + 2) ** 3 / 2;
   camera.position.lerpVectors(introFrom, START_POSITION, eased);
-  introLook.set(0, 4, -18).lerp(new THREE.Vector3(0, 2.2, 14), eased);
+  introLook.set(0, 4.5, -10).lerp(new THREE.Vector3(0, 2.2, 14), eased);
   camera.lookAt(introLook);
   if (introProgress >= 1) {
     controls.target.copy(START_TARGET);
