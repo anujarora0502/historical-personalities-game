@@ -3,6 +3,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { BrowserAudioInterface, ConversationAgent, InteractionType } from 'sarvam-conv-ai-sdk/browser';
+import { DIALOGUE, FRAGMENTS, FRAGMENT_REMARKS, GAME_SUBTITLE, GAME_TITLE } from './src/content.js';
+import { MissionLog, loadSave } from './src/missions.js';
+import { GameUI } from './src/ui.js';
+import { createWorldExtras } from './src/world-extras.js';
+import { initAudio, sfx, toggleMute } from './src/audio.js';
 
 // Resolve files in public/ against Vite's base URL so the game also works when
 // hosted under a sub-path (e.g. GitHub Pages at /<repo>/).
@@ -34,6 +39,7 @@ app.appendChild(renderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enablePan = false;
+controls.enabled = false; // enabled once the visit starts
 controls.enableZoom = false;
 controls.minDistance = 0.01;
 controls.maxDistance = 100;
@@ -63,12 +69,10 @@ let jumpVelocity = 0;
 let isJumping = false;
 let talkingFighter = null;
 let speakingCharacter = null;
-let nearbyFighter = null;
 let sarvamAgent = null;
 let sarvamStarting = false;
 let sarvamOutputLevel = 0;
 let sarvamTargetLevel = 0;
-let conversationDismissed = false;
 
 // Bright daylight lighting setup
 scene.add(new THREE.HemisphereLight('#ffffff', '#888899', 1.0)); // Bright ambient
@@ -363,6 +367,7 @@ new GLTFLoader().load(assetUrl('stylized_bush.glb'), (gltf) => {
 });
 
 const einsteinExhibit = {
+  id: 'einstein',
   name: 'Albert Einstein',
   era: '1879 - 1945  |  Physics & Cosmology',
   dialogue: true,
@@ -379,6 +384,7 @@ const einsteinExhibit = {
 };
 
 const gandhiExhibit = {
+  id: 'gandhi',
   name: 'Mahatma Gandhi',
   era: '1869 - 1948  |  Civil Rights & Freedom',
   dialogue: true,
@@ -396,12 +402,14 @@ const gandhiExhibit = {
 };
 
 const guideExhibit = {
+  id: 'guide',
   name: 'Gallery Guide',
   era: 'Gallery Welcome',
   dialogue: true,
   isGuide: true,
   sarvamAppId: import.meta.env.VITE_SARVAM_GUIDE_APP_ID || 'Conversatio-9f72aaa2-f2f0',
   proximityRadius: 4.5,
+  interactRadius: 4.2, // she stands behind the info desk
   agentVariables: {
     call_summary: '',
     gender: 'female',
@@ -654,60 +662,6 @@ function addInfoDesk() {
   addLabel('INFO DESK', -5.5, 0.8, 2.11, 0, 0.8);
 }
 
-function roomAt(position) {
-  if (position.z < -4) {
-    return ['The Grand Museum', 'Walk close to a character to talk to them.'];
-  }
-  return ['Museum Grounds', 'Walk toward the entrance and approach a character to talk.'];
-}
-
-function nearbyExhibit() {
-  let closest = null;
-  let closestDistance = Infinity;
-  for (const character of characters) {
-    const distance = camera.position.distanceTo(character.position);
-    const radius = character.root.userData.exhibit.proximityRadius || 4.4;
-    if (distance < radius && distance < closestDistance) {
-      closest = character.root.userData.exhibit;
-      closestDistance = distance;
-    }
-  }
-  return closest;
-}
-
-function stopConversation() {
-  sarvamAgent?.stop().catch(() => {});
-  sarvamAgent = null;
-  sarvamOutputLevel = 0;
-  sarvamTargetLevel = 0;
-}
-
-function updateInteraction() {
-  const nearby = nearbyExhibit();
-  if (nearby && nearbyFighter !== nearby && !conversationDismissed) {
-    stopConversation();
-    nearbyFighter = nearby;
-    openExhibit(nearby);
-    startSarvamConversation();
-  } else if (!nearby) {
-    nearbyFighter = null;
-    conversationDismissed = false;
-    if (sarvamAgent) {
-      stopConversation();
-      setCharacterState(talkingFighter, 'idle');
-      setSpeaking(talkingFighter, false);
-    }
-  }
-}
-
-function startNearbyConversationFromGesture() {
-  const nearby = nearbyExhibit();
-  if (!nearby || nearbyFighter === nearby || conversationDismissed) return;
-  nearbyFighter = nearby;
-  openExhibit(nearby);
-  startSarvamConversation();
-}
-
 function registerCharacter(root, exhibit) {
   const position = new THREE.Vector3();
   root.getWorldPosition(position);
@@ -743,12 +697,6 @@ function registerCharacter(root, exhibit) {
   return character;
 }
 
-function openExhibit(exhibit) {
-  if (exhibit.dialogue) {
-    talkingFighter = exhibit;
-  }
-}
-
 function findCharacter(exhibit) {
   return characters.find(({ root }) => root.userData.exhibit === exhibit);
 }
@@ -769,18 +717,27 @@ function setSpeaking(exhibit, isSpeaking) {
   }
 }
 
-window.addEventListener('keydown', (event) => {
-  const key = event.key.toLowerCase();
-  if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) keys.add(key);
-  if (key === ' ' && !isJumping) {
-    jumpVelocity = 5.4;
-    isJumping = true;
-    event.preventDefault();
-  }
-  startNearbyConversationFromGesture();
-});
-window.addEventListener('keyup', (event) => keys.delete(event.key.toLowerCase()));
-window.addEventListener('pointerdown', startNearbyConversationFromGesture);
+function roomAt(position) {
+  if (position.z < -4) return ['The Great Hall', 'Walk up to a guest and press E to talk.'];
+  if (position.z < 21) return ['Museum Grounds', 'Explore the gardens, or head up the steps into the hall.'];
+  return ['Museum Street', 'The museum gates are just ahead.'];
+}
+
+// ============================================================================
+// Game layer: missions, interaction, conversations (text + voice), photos.
+// ============================================================================
+const ui = new GameUI(document.querySelector('#ui'));
+const extras = createWorldExtras({ scene, surfaceHeightAt });
+let log = null; // MissionLog, created when the visit starts
+let gameStarted = false;
+let introProgress = 0; // camera glide from the title flyover to the gate
+const introFrom = new THREE.Vector3();
+let activeConversation = null; // { id, character }
+let voiceStatus = 'idle';
+let footstepDistance = 0;
+let currentInteractable = null;
+const bannerQueue = [];
+let bannerBusy = false;
 
 const sarvamConfig = {
   apiKey: import.meta.env.VITE_SARVAM_API_KEY,
@@ -788,12 +745,217 @@ const sarvamConfig = {
   workspaceId: import.meta.env.VITE_SARVAM_WORKSPACE_ID,
   appId: import.meta.env.VITE_SARVAM_APP_ID,
 };
+const voiceAvailable = Boolean(sarvamConfig.apiKey && sarvamConfig.orgId && sarvamConfig.workspaceId);
+
+function characterById(id) {
+  return characters.find((character) => character.exhibit.id === id) || null;
+}
+
+function queueBanner(kicker, title) {
+  bannerQueue.push([kicker, title]);
+  if (bannerBusy) return;
+  const next = () => {
+    const item = bannerQueue.shift();
+    if (!item) { bannerBusy = false; return; }
+    bannerBusy = true;
+    ui.showBanner(...item);
+    setTimeout(next, 3800);
+  };
+  next();
+}
+
+function bindMissionEvents() {
+  log.on((type, detail) => {
+    if (type === 'objective') {
+      const done = detail.progress >= detail.target;
+      if (done) {
+        sfx.objective();
+        ui.toast(`Objective complete: ${detail.objective.text} <span class="toast-stars">+1 ★</span>`, 'info', '✔');
+      } else {
+        ui.toast(`${detail.objective.text}: ${detail.progress}/${detail.target}`, 'info', '✦');
+      }
+    } else if (type === 'stars' && !detail.silent) {
+      ui.toast(`+${detail.amount} ★ ${detail.reason ? `· ${detail.reason}` : ''}`, 'star', '★');
+    } else if (type === 'rank') {
+      sfx.success();
+      ui.toast(`New rank: <strong>${detail.rank.title}</strong>`, 'rank', '♛');
+    } else if (type === 'mission-complete') {
+      sfx.success();
+      queueBanner('Mission complete', detail.mission.title);
+      if (detail.mission.id === 'welcome') {
+        extras.showFragments(log.state.fragments);
+        sfx.whoosh();
+      }
+    } else if (type === 'mission-start') {
+      queueBanner('New mission', detail.mission.title);
+    }
+    ui.renderTracker(log);
+  });
+}
+
+function startGame({ mode, name }) {
+  initAudio();
+  sfx.success();
+  const saved = mode === 'continue' ? loadSave() : null;
+  log = saved ? new MissionLog(saved) : MissionLog.newGame(name);
+  if (!saved) log.save();
+  bindMissionEvents();
+  if (log.isMissionComplete('welcome')) extras.showFragments(log.state.fragments);
+  if (log.state.timelineRestored) extras.restoreTimeline(true);
+  introFrom.copy(camera.position);
+  introProgress = 0.0001;
+  ui.setHudVisible(true);
+  ui.renderTracker(log);
+  if (saved) {
+    queueBanner('Welcome back', log.name);
+  } else {
+    queueBanner('Echoes of History', `Welcome, ${log.name}`);
+    queueBanner('New mission', 'A Warm Welcome');
+    setTimeout(() => ui.toast('Follow the golden beam to the info desk', 'info', '✦'), 1500);
+  }
+}
+
+// ------------------------------------------------------------ interaction
+function interactables() {
+  const list = [];
+  for (const character of characters) {
+    list.push({ kind: 'character', id: character.exhibit.id, label: `Talk to ${character.exhibit.name}`, position: character.position, radius: character.exhibit.interactRadius || 3.4 });
+  }
+  for (const plaque of extras.plaques) {
+    list.push({ kind: 'plaque', plaque, label: `Read about ${plaque.title.split(' (')[0]}`, position: plaque.group.position, radius: 2.2 });
+  }
+  list.push({ kind: 'timeline', label: 'Examine the Timeline Wall', position: extras.timelinePosition, radius: 4.5 });
+  return list;
+}
+
+function nearestInteractable() {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const item of interactables()) {
+    const distance = Math.hypot(camera.position.x - item.position.x, camera.position.z - item.position.z);
+    if (distance < item.radius && distance < bestDistance) {
+      best = item;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function interact(item) {
+  if (!item || !log) return;
+  keys.clear();
+  if (item.kind === 'character') openConversation(item.id);
+  else if (item.kind === 'plaque') { sfx.open(); ui.showPlaque(item.plaque); }
+  else if (item.kind === 'timeline') {
+    if (log.state.timelineRestored) {
+      ui.toast('The Timeline of History is whole again.', 'info', '✦');
+      return;
+    }
+    ui.openTimeline(log.state.fragments, onTimelineSolved);
+  }
+}
+
+function onTimelineSolved() {
+  log.restoreTimeline();
+  extras.restoreTimeline();
+  sfx.fanfare();
+  const ahead = new THREE.Vector3();
+  camera.getWorldDirection(ahead);
+  extras.burst(camera.position.clone().addScaledVector(ahead, 4).add(new THREE.Vector3(0, 2.5, 0)), 2);
+  queueBanner('History restored', 'The Timeline Wall shines again');
+  setTimeout(() => extras.burst(extras.timelinePosition.clone().add(new THREE.Vector3(0, 5, 0)), 4), 1400);
+  setTimeout(() => ui.showEnding(log, { onPhoto: takePhoto }), 3600);
+}
+
+// ----------------------------------------------------------- conversation
+function dialogueNode(id, nodeId) {
+  const source = DIALOGUE[id][nodeId];
+  let text = source.text;
+  if (id === 'guide' && nodeId === 'start' && log.state.timelineRestored) {
+    text = 'You did it, {name}! The Timeline Wall is shining again — thank you. You are now officially a Curator of Time. Feel free to keep exploring.';
+  } else if (nodeId === 'start' && FRAGMENT_REMARKS[id] && FRAGMENTS.some((fragment) => fragment.owner === id && log.hasFragment(fragment.id))) {
+    text = `${text} ${FRAGMENT_REMARKS[id]}`;
+  }
+  return {
+    text: text.replaceAll('{name}', log.name),
+    options: source.options.map((option) => ({
+      label: option.label,
+      onSelect: () => {
+        if (option.next) ui.setDialogueNode(dialogueNode(id, option.next));
+        else if (option.action === 'quiz') startQuiz(id);
+        else closeConversation();
+      },
+    })),
+  };
+}
+
+function voiceState() {
+  return {
+    available: voiceAvailable,
+    active: Boolean(sarvamAgent || sarvamStarting),
+    status: voiceStatus,
+    onStart: () => startSarvamConversation(),
+    onStop: () => {
+      stopConversation();
+      voiceStatus = 'idle';
+      setCharacterState(talkingFighter, 'listening');
+      setSpeaking(talkingFighter, false);
+      ui.setVoice(voiceState());
+    },
+  };
+}
+
+function openConversation(id) {
+  const character = characterById(id);
+  if (!character) return;
+  activeConversation = { id, character };
+  talkingFighter = character.exhibit;
+  character.motionState = 'listening';
+  sfx.open();
+  ui.closeDialogueRequest = closeConversation;
+  ui.openDialogue(id, dialogueNode(id, 'start'), voiceState());
+  log.meet(id);
+}
+
+function closeConversation() {
+  if (!activeConversation) return;
+  stopConversation();
+  voiceStatus = 'idle';
+  setCharacterState(talkingFighter, 'idle');
+  setSpeaking(talkingFighter, false);
+  ui.closeDialogue();
+  sfx.close();
+  activeConversation = null;
+  talkingFighter = null;
+}
+
+function startQuiz(id) {
+  const character = activeConversation?.character;
+  closeConversation();
+  if (character) character.motionState = 'listening';
+  ui.startQuiz(id, (score) => {
+    if (character) character.motionState = 'idle';
+    return log.recordQuiz(id, score);
+  });
+}
+
+function stopConversation() {
+  sarvamAgent?.stop().catch(() => {});
+  sarvamAgent = null;
+  sarvamOutputLevel = 0;
+  sarvamTargetLevel = 0;
+}
 
 async function startSarvamConversation() {
-  if (sarvamAgent || sarvamStarting) return;
-  const appId = talkingFighter?.sarvamAppId || sarvamConfig.appId;
-  if (!sarvamConfig.apiKey || !sarvamConfig.orgId || !sarvamConfig.workspaceId || !appId) return;
+  if (sarvamAgent || sarvamStarting || !talkingFighter) return;
+  const appId = talkingFighter.sarvamAppId || sarvamConfig.appId;
+  if (!voiceAvailable || !appId) return;
+  const exhibit = talkingFighter;
   sarvamStarting = true;
+  voiceStatus = 'connecting';
+  ui.setVoice(voiceState());
+  const variables = { ...(exhibit.agentVariables || {}) };
+  for (const key of ['user_name', 'caller_name']) if (key in variables) variables[key] = log?.name || 'Museum Visitor';
   try {
     sarvamAgent = new ConversationAgent({
       apiKey: sarvamConfig.apiKey,
@@ -803,11 +965,11 @@ async function startSarvamConversation() {
         workspace_id: sarvamConfig.workspaceId,
         app_id: appId,
         user_identifier_type: 'custom',
-        user_identifier: talkingFighter?.userIdentifier || `museum-visitor-${crypto.randomUUID()}`,
+        user_identifier: exhibit.userIdentifier || `museum-visitor-${crypto.randomUUID()}`,
         interaction_type: InteractionType.CALL,
         input_sample_rate: 16000,
         output_sample_rate: 16000,
-        agent_variables: talkingFighter?.agentVariables || { user_name: 'Museum Visitor' },
+        agent_variables: variables,
       },
       audioInterface: new BrowserAudioInterface(16000, {
         outputLevelCallback: ({ rms }) => {
@@ -817,33 +979,147 @@ async function startSarvamConversation() {
       }),
       audioCallback: async () => {
         // Audio chunks are the authoritative signal that the agent is speaking.
-        setCharacterState(talkingFighter, 'speaking');
-        setSpeaking(talkingFighter, true);
+        setCharacterState(exhibit, 'speaking');
+        setSpeaking(exhibit, true);
+        if (voiceStatus !== 'speaking') { voiceStatus = 'speaking'; ui.setVoice(voiceState()); }
       },
       stateCallback: (state) => {
         const normalizedState = String(state).toLowerCase();
-        setCharacterState(talkingFighter, normalizedState);
-        setSpeaking(talkingFighter, normalizedState === 'speaking');
+        setCharacterState(exhibit, normalizedState);
+        setSpeaking(exhibit, normalizedState === 'speaking');
+        voiceStatus = normalizedState === 'speaking' ? 'speaking' : 'listening';
+        ui.setVoice(voiceState());
       },
       endCallback: async () => {
         sarvamAgent = null;
         sarvamOutputLevel = 0;
         sarvamTargetLevel = 0;
-        conversationDismissed = true;
-        nearbyFighter = talkingFighter;
-        setCharacterState(talkingFighter, 'idle');
-        setSpeaking(talkingFighter, false);
+        voiceStatus = 'idle';
+        setCharacterState(exhibit, activeConversation ? 'listening' : 'idle');
+        setSpeaking(exhibit, false);
+        ui.setVoice(voiceState());
       },
     });
     await sarvamAgent.start();
     const connected = await sarvamAgent.waitForConnect(10);
     if (!connected) throw new Error('Sarvam connection timed out');
+    voiceStatus = 'listening';
   } catch (error) {
     console.error('Sarvam connection error:', error);
     stopConversation();
-    nearbyFighter = null;
+    voiceStatus = 'idle';
+    ui.toast('Voice chat is unavailable right now — you can still talk by text.', 'info', '🎙');
   } finally {
     sarvamStarting = false;
+    ui.setVoice(voiceState());
+  }
+}
+
+// ------------------------------------------------------------------ photo
+function takePhoto() {
+  if (!gameStarted || ui.isBlocking()) return;
+  renderer.render(scene, camera);
+  const shot = renderer.domElement.toDataURL('image/jpeg', 0.92);
+  ui.photoFlash();
+  sfx.shutter();
+  const image = new Image();
+  image.onload = () => {
+    const width = 1600;
+    const photoHeight = Math.round((image.height / image.width) * (width - 80));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = photoHeight + 200;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#f4ede0';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 40, 40, width - 80, photoHeight);
+    context.strokeStyle = '#c9a45c';
+    context.lineWidth = 3;
+    context.strokeRect(40, 40, width - 80, photoHeight);
+    context.fillStyle = '#2a2116';
+    context.textAlign = 'center';
+    context.font = '600 48px "Playfair Display", Georgia, serif';
+    context.fillText(`${GAME_TITLE} — ${GAME_SUBTITLE}`, width / 2, photoHeight + 112);
+    context.font = '400 28px Inter, sans-serif';
+    context.fillStyle = '#6b5a40';
+    const date = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+    context.fillText(`${log.name} · ${log.rank.title} · ${date}`, width / 2, photoHeight + 160);
+    const link = document.createElement('a');
+    link.download = `grand-museum-${Date.now()}.jpg`;
+    link.href = canvas.toDataURL('image/jpeg', 0.9);
+    link.click();
+  };
+  image.src = shot;
+  log.state.photos += 1;
+  log.save();
+  ui.toast('Souvenir photo saved to your downloads', 'info', '📷');
+}
+
+// ------------------------------------------------------------------ input
+window.addEventListener('keydown', (event) => {
+  if (!gameStarted || introProgress < 1 || ui.isBlocking()) return;
+  const key = event.key.toLowerCase();
+  if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) keys.add(key);
+  if (key === ' ' && !isJumping) {
+    jumpVelocity = 5.4;
+    isJumping = true;
+    event.preventDefault();
+  }
+  if (key === 'e') interact(currentInteractable);
+  if (key === 'j' || key === 'tab') {
+    event.preventDefault();
+    keys.clear();
+    ui.toggleJournal(log);
+  }
+  if (key === 'p') takePhoto();
+  if (key === 'm') ui.toast(toggleMute() ? 'Sound off' : 'Sound on', 'info', '♪');
+});
+window.addEventListener('keyup', (event) => keys.delete(event.key.toLowerCase()));
+window.addEventListener('blur', () => keys.clear());
+
+// -------------------------------------------------------------- per frame
+const compassTarget = new THREE.Vector3();
+function objectiveTarget() {
+  const current = log?.currentObjective();
+  if (!current) return null;
+  const { target } = current.objective;
+  if (target === 'fragment') {
+    const nearest = extras.nearestFragment(camera.position);
+    return nearest ? compassTarget.copy(nearest.root.position) : null;
+  }
+  if (target === 'timeline') return compassTarget.copy(extras.timelinePosition);
+  const character = characterById(target);
+  return character ? compassTarget.copy(character.position) : null;
+}
+
+function updateGame(time, delta) {
+  if (!gameStarted) return;
+  const blocking = ui.isBlocking();
+  // Interaction prompt
+  currentInteractable = blocking ? null : nearestInteractable();
+  ui.setPrompt(currentInteractable?.label || null);
+  // Fragment pickup
+  if (!blocking) {
+    const found = extras.fragmentAt(camera.position, 1.8);
+    if (found) {
+      keys.clear();
+      extras.collect(found);
+      sfx.collect();
+      log.collectFragment(found.fragment.id);
+      ui.showFragmentCard(found.fragment, log.state.fragments.length, FRAGMENTS.length);
+    }
+  }
+  // Objective beam and compass
+  const target = objectiveTarget();
+  extras.setBeacon(target);
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+  const heading = Math.atan2(direction.x, -direction.z);
+  if (target) {
+    const bearing = Math.atan2(target.x - camera.position.x, -(target.z - camera.position.z));
+    ui.updateCompass(heading, bearing, Math.hypot(target.x - camera.position.x, target.z - camera.position.z));
+  } else {
+    ui.updateCompass(heading, null, 0);
   }
 }
 
@@ -882,7 +1158,8 @@ function updateCharacters(time, delta) {
     root.getWorldPosition(character.position);
     const distance = Math.hypot(character.position.x - visitorPosition.x, character.position.z - visitorPosition.z);
     const isInProximity = distance <= (exhibit.proximityRadius || 4.4);
-    const isRoaming = character.roam && (!isInProximity || conversationDismissed) && !sarvamAgent && !sarvamStarting;
+    const inConversation = activeConversation?.character === character || (talkingFighter === exhibit && (sarvamAgent || sarvamStarting));
+    const isRoaming = character.roam && !isInProximity && !inConversation;
     const faceOffset = exhibit.faceOffset || 0;
 
     // Wander: pause, pick a nearby spot, turn toward it, then ease into walking.
@@ -1039,11 +1316,29 @@ function updateGalleryDoors(delta) {
   }
 }
 
-function animate() {
-  requestAnimationFrame(animate);
-  timer.update();
-  const delta = Math.min(timer.getDelta(), 0.05);
-  const elapsed = timer.getElapsed();
+const START_POSITION = new THREE.Vector3(0, 2.2, 26);
+const START_TARGET = new THREE.Vector3(0, 2.2, 25.99);
+const introLook = new THREE.Vector3();
+
+function updateTitleCamera(elapsed) {
+  const angle = elapsed * 0.05 + 0.6;
+  camera.position.set(Math.sin(angle) * 36, 12.5 + Math.sin(elapsed * 0.13) * 1.5, -14 + Math.cos(angle) * 40);
+  camera.lookAt(0, 4, -18);
+}
+
+function updateIntroGlide(delta) {
+  introProgress = Math.min(1, introProgress + delta / 2.6);
+  const eased = introProgress < 0.5 ? 4 * introProgress ** 3 : 1 - (-2 * introProgress + 2) ** 3 / 2;
+  camera.position.lerpVectors(introFrom, START_POSITION, eased);
+  introLook.set(0, 4, -18).lerp(new THREE.Vector3(0, 2.2, 14), eased);
+  camera.lookAt(introLook);
+  if (introProgress >= 1) {
+    controls.target.copy(START_TARGET);
+    controls.update();
+  }
+}
+
+function updatePlayer(delta) {
   camera.getWorldDirection(forward);
   forward.y = 0;
   forward.normalize();
@@ -1069,50 +1364,99 @@ function animate() {
       controls.target.y += dy;
     }
   }
-  if (movement.lengthSq()) {
-    movement.normalize().multiplyScalar(delta * 4.2);
-    const next = camera.position.clone().add(movement);
-    next.x = THREE.MathUtils.clamp(next.x, -70, 70);
-    next.z = THREE.MathUtils.clamp(next.z, -70, 70);
+  if (!movement.lengthSq()) return;
+  movement.normalize().multiplyScalar(delta * 4.2);
+  const next = camera.position.clone().add(movement);
+  next.x = THREE.MathUtils.clamp(next.x, -70, 70);
+  next.z = THREE.MathUtils.clamp(next.z, -70, 70);
 
-    // Collision Detection against walls and pillars
-    const radius = 0.8;
-    for (const wall of colliders) {
-      const closestX = Math.max(wall.minX, Math.min(next.x, wall.maxX));
-      const closestZ = Math.max(wall.minZ, Math.min(next.z, wall.maxZ));
-      const dx = next.x - closestX;
-      const dz = next.z - closestZ;
-      const distanceSq = dx * dx + dz * dz;
-      if (distanceSq < radius * radius) {
-        const distance = Math.sqrt(distanceSq) || 0.001;
-        const overlap = radius - distance;
-        next.x += (dx / distance) * overlap;
-        next.z += (dz / distance) * overlap;
-      }
+  // Push the visitor out of walls, pillars and hedges...
+  const radius = 0.8;
+  for (const wall of colliders) {
+    const closestX = Math.max(wall.minX, Math.min(next.x, wall.maxX));
+    const closestZ = Math.max(wall.minZ, Math.min(next.z, wall.maxZ));
+    const dx = next.x - closestX;
+    const dz = next.z - closestZ;
+    const distanceSq = dx * dx + dz * dz;
+    if (distanceSq < radius * radius) {
+      const distance = Math.sqrt(distanceSq) || 0.001;
+      const overlap = radius - distance;
+      next.x += (dx / distance) * overlap;
+      next.z += (dz / distance) * overlap;
     }
-
-    next.y = isJumping ? camera.position.y : 1.65 + surfaceHeightAt(next.x, next.z);
-    const change = next.sub(camera.position);
-    camera.position.add(change);
-    controls.target.add(change);
   }
-  let name, detail;
-  if (talkingFighter && (sarvamAgent || sarvamStarting)) {
-    if (locationLabel) locationLabel.textContent = "YOU ARE TALKING TO";
-    name = talkingFighter.name;
-    detail = talkingFighter.era;
+  // ...and out of the characters, so you bump into people instead of walking through them.
+  for (const character of characters) {
+    const dx = next.x - character.position.x;
+    const dz = next.z - character.position.z;
+    const distance = Math.hypot(dx, dz);
+    const personal = 0.95;
+    if (distance < personal) {
+      const safe = distance || 0.001;
+      next.x += (dx / safe) * (personal - distance);
+      next.z += (dz / safe) * (personal - distance);
+    }
+  }
+
+  next.y = isJumping ? camera.position.y : 1.65 + surfaceHeightAt(next.x, next.z);
+  const change = next.sub(camera.position);
+  camera.position.add(change);
+  controls.target.add(change);
+  if (!isJumping) {
+    footstepDistance += Math.hypot(change.x, change.z);
+    if (footstepDistance > 1.65) {
+      footstepDistance = 0;
+      sfx.step(camera.position.z < -3 ? 'stone' : 'grass');
+    }
+  }
+}
+
+function updateLocationCard() {
+  let name;
+  let detail;
+  if (activeConversation) {
+    locationLabel.textContent = 'You are talking to';
+    name = activeConversation.character.exhibit.name;
+    detail = activeConversation.character.exhibit.era;
   } else {
-    if (locationLabel) locationLabel.textContent = "YOU ARE EXPLORING";
+    locationLabel.textContent = 'You are exploring';
     [name, detail] = roomAt(camera.position);
   }
-  roomName.textContent = name;
-  roomDetail.textContent = detail;
-  updateInteraction();
+  if (roomName.textContent !== name) roomName.textContent = name;
+  if (roomDetail.textContent !== detail) roomDetail.textContent = detail;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  timer.update();
+  const delta = Math.min(timer.getDelta(), 0.05);
+  const elapsed = timer.getElapsed();
+  const playing = gameStarted && introProgress >= 1;
+  if (!gameStarted) {
+    updateTitleCamera(elapsed);
+    if (introProgress > 0) gameStarted = true;
+  } else if (introProgress < 1) {
+    updateIntroGlide(delta);
+  } else {
+    const blocking = ui.isBlocking();
+    controls.enabled = !blocking;
+    if (blocking) keys.clear();
+    updatePlayer(delta);
+  }
+  if (gameStarted) updateLocationCard();
   updateCharacters(elapsed, delta);
+  updateGame(elapsed, delta);
+  extras.update(elapsed, delta, camera.position);
   updateGalleryDoors(delta);
-  controls.update();
+  if (playing) controls.update();
   renderer.render(scene, camera);
 }
+
+ui.showTitle({
+  hasSave: Boolean(loadSave()),
+  savedName: loadSave()?.name,
+  onStart: (choice) => startGame(choice),
+});
 animate();
 
 window.addEventListener('resize', () => {
