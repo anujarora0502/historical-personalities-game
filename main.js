@@ -445,7 +445,7 @@ const RIGS = {
   },
   einstein: {
     facing: -1,
-    head: /^(Head|Cheek_|Ear_|Eye_|Eyebrow_|ForeheadLine_|Glasses|Hair_|HairStrand_|Iris_|LowerEyelid_|UpperEyelid_|Moustache|Mouth|Lip_|Teeth|Nose|SweptHair_)/,
+    head: /^(Head|Cheek_|Ear_|Eye_|Eyebrow_|ForeheadLine_|Glasses|Hair_|HairStrand_|Iris_|LowerEyelid_|UpperEyelid_|Moustache|Mouth|Lips|Teeth|Nose|SweptHair_)/,
     leftArm: /^(Left_Arm|LCuff|Left_Hand|Finger_L_\d|Thumb_L)$/,
     rightArm: /^(Right_Arm|RCuff|Right_Hand|Finger_R_\d|Thumb_R)$/,
     leftLeg: /^(Left_Leg|Left_Shoe|Sole_L|Lace_L_\d)$/,
@@ -536,32 +536,54 @@ function buildRig(model, spec) {
 }
 
 /**
- * The mouth is made of an upper and lower lip in front of a dark mouth
- * interior with a row of teeth. Speaking drops the lower lip (the jaw) and
- * stretches the interior to fill the gap; the lips also narrow and widen a
- * little between syllables.
+ * The mouth is one lip mesh (upper and lower lip joined at tapered corners,
+ * closed at rest) in front of a dark mouth interior and a row of upper teeth.
+ * Speaking bends the lip mesh: the middle of the lower lip drops and the upper
+ * lip lifts slightly, while the corners stay joined.
  */
 function buildMouth(container, prefix) {
-  const part = (name) => container.getObjectByName(`${prefix}${name}`);
-  const upper = part('Lip_Upper');
-  const lower = part('Lip_Lower');
-  const inner = part('Mouth_Inner');
-  if (!upper || !lower || !inner) return null;
-  const rest = (object) => ({ position: object.position.clone(), scale: object.scale.clone() });
-  return { upper, lower, inner, rest: { upper: rest(upper), lower: rest(lower), inner: rest(inner) }, lipHeight: upper.scale.y };
+  const lips = container.getObjectByName(`${prefix}Lips`);
+  const inner = container.getObjectByName(`${prefix}Mouth_Inner`);
+  if (!lips || !inner) return null;
+  const base = Float32Array.from(lips.geometry.attributes.position.array);
+  let halfWidth = 0;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < base.length; i += 3) {
+    halfWidth = Math.max(halfWidth, Math.abs(base[i]));
+    minY = Math.min(minY, base[i + 1]);
+    maxY = Math.max(maxY, base[i + 1]);
+  }
+  return {
+    lips,
+    inner,
+    base,
+    halfWidth,
+    height: maxY - minY,
+    innerRest: { position: inner.position.clone(), scale: inner.scale.clone() },
+  };
 }
 
 function animateMouth(mouth, open, shape) {
-  const { upper, lower, inner, rest, lipHeight } = mouth;
-  const drop = open * lipHeight * 4.5;
-  const width = 1 - open * 0.14 * shape;
-  lower.position.y = rest.lower.position.y - drop;
-  upper.position.y = rest.upper.position.y + open * lipHeight * 0.3;
-  inner.position.y = rest.inner.position.y - drop * 0.5;
-  inner.scale.y = rest.inner.scale.y + drop * 0.55;
-  for (const [object, base] of [[upper, rest.upper], [lower, rest.lower], [inner, rest.inner]]) {
-    object.scale.x = base.scale.x * width;
+  const { lips, inner, base, halfWidth, height, innerRest } = mouth;
+  const position = lips.geometry.attributes.position;
+  const array = position.array;
+  const gap = open * height * 0.75;
+  const narrow = 1 - open * 0.1 * shape;
+  for (let i = 0; i < array.length; i += 3) {
+    const x = base[i];
+    const y = base[i + 1];
+    const u = x / halfWidth;
+    const bow = Math.max(0, 1 - u * u); // full movement in the middle, none at the corners
+    array[i] = x * narrow;
+    array[i + 1] = y >= 0 ? y + gap * 0.22 * bow : y - gap * bow;
+    array[i + 2] = base[i + 2];
   }
+  position.needsUpdate = true;
+  lips.geometry.computeVertexNormals();
+  inner.position.y = innerRest.position.y - gap * 0.3;
+  inner.scale.y = innerRest.scale.y + gap * 0.4;
+  inner.scale.x = innerRest.scale.x * narrow;
 }
 
 /**
@@ -596,7 +618,7 @@ function loadCharacter({ url, exhibit, rig, x, y = 0, z, roam, onLoad }) {
 }
 
 loadCharacter({
-  url: assetUrl('einstein-custom.glb?v=6'),
+  url: assetUrl('einstein-custom.glb?v=8'),
   exhibit: einsteinExhibit,
   rig: RIGS.einstein,
   x: -4,
@@ -606,7 +628,7 @@ loadCharacter({
 });
 
 loadCharacter({
-  url: assetUrl('gandhi-custom.glb?v=6'),
+  url: assetUrl('gandhi-custom.glb?v=8'),
   exhibit: gandhiExhibit,
   rig: RIGS.gandhi,
   x: 4,
@@ -616,7 +638,7 @@ loadCharacter({
 });
 
 loadCharacter({
-  url: assetUrl('guide-custom.glb?v=6'),
+  url: assetUrl('guide-custom.glb?v=8'),
   exhibit: guideExhibit,
   rig: RIGS.guide,
   x: -5.5,
