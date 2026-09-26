@@ -1,8 +1,8 @@
 // Mission progress, stars and save data. Emits simple events so the UI and
 // world can react without knowing about each other.
-import { FRAGMENTS, MISSIONS, QUIZZES, RANKS } from './content.js';
+import { FRAGMENTS, MISSIONS, RANKS } from './content.js';
 
-const SAVE_KEY = 'grand-museum-save-v1';
+const SAVE_KEY = 'grand-museum-save-v2';
 
 function freshState(name = '') {
   return {
@@ -10,7 +10,6 @@ function freshState(name = '') {
     objectives: {}, // objective id -> progress count
     completedMissions: [],
     fragments: [], // collected fragment ids
-    quizBest: {}, // character -> best score
     met: [], // characters talked to
     stars: 0,
     timelineRestored: false,
@@ -153,11 +152,7 @@ export class MissionLog {
       let already = 0;
       if (objective.id === 'collect') already = this.state.fragments.length;
       else if (objective.id.startsWith('talk-')) already = this.state.met.includes(objective.id.slice(5)) ? 1 : 0;
-      else if (objective.id.startsWith('quiz-')) {
-        const character = objective.id.slice(5);
-        const needed = Math.ceil((QUIZZES[character].length * 2) / 3);
-        already = (this.state.quizBest[character] || 0) >= needed ? 1 : 0;
-      } else if (objective.id === 'restore') already = this.state.timelineRestored ? 1 : 0;
+      else if (objective.id === 'restore') already = this.state.timelineRestored ? 1 : 0;
       const missing = Math.min(objective.count || 1, already) - this.objectiveProgress(objective);
       if (missing > 0) this.progress(objective.id, missing);
     }
@@ -184,19 +179,6 @@ export class MissionLog {
     this.progress('collect');
     this.save();
     return true;
-  }
-
-  recordQuiz(character, score) {
-    const best = this.state.quizBest[character] || 0;
-    if (score > best) {
-      const names = { gandhi: 'Gandhi\u2019s quiz', einstein: 'Einstein\u2019s quiz' };
-      this.addStars(score - best, names[character] || 'Quiz');
-      this.state.quizBest[character] = score;
-    }
-    const passed = score >= Math.ceil((QUIZZES[character].length * 2) / 3);
-    if (passed) this.progress(`quiz-${character}`);
-    this.save();
-    return passed;
   }
 
   restoreTimeline() {
