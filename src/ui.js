@@ -49,8 +49,8 @@ export class GameUI {
 
   build() {
     this.root.innerHTML = '';
-    this.tracker = el('section', 'tracker glass');
-    this.compass = el('div', 'compass glass', '<div class="compass-strip"></div><div class="compass-marker"><span class="compass-diamond"></span><span class="compass-distance"></span></div><div class="compass-needle"></div>');
+    this.tracker = el('section', 'placard');
+    this.compass = el('div', 'compass', '<div class="compass-strip"></div><div class="compass-marker"><span class="compass-diamond"></span><span class="compass-distance"></span></div><div class="compass-needle"></div>');
     this.prompt = el('div', 'prompt hidden');
     this.voice = el('div', 'voice-pill hidden');
     this.toasts = el('div', 'toasts');
@@ -87,15 +87,21 @@ export class GameUI {
     this.modal = 'title';
     this.title.classList.remove('hidden');
     this.title.innerHTML = `
-      <div class="title-inner">
-        <h1>${GAME_TITLE}</h1>
-        <p class="subtitle">${GAME_SUBTITLE}</p>
-        <input id="player-name" maxlength="18" autocomplete="off" placeholder="Your name" aria-label="Your name" value="${escapeHtml(savedName || '')}" />
-        <div class="title-actions">
-          ${hasSave ? '<button class="btn primary" data-act="continue">Continue</button><button class="btn ghost" data-act="new">New visit</button>' : '<button class="btn primary" data-act="new">Enter the museum</button>'}
+      <div class="ticket">
+        <div class="ticket-main">
+          <p class="ticket-kicker">Admission · Evening Exhibition</p>
+          <h1>${GAME_TITLE}</h1>
+          <p class="subtitle">${GAME_SUBTITLE}</p>
+          <label class="ticket-field"><span>Visitor</span>
+            <input id="player-name" maxlength="18" autocomplete="off" placeholder="Your name" value="${escapeHtml(savedName || '')}" />
+          </label>
+          <div class="title-actions">
+            ${hasSave ? '<button class="btn primary" data-act="continue">Continue</button><button class="btn ghost" data-act="new">New visit</button>' : '<button class="btn primary" data-act="new">Enter the museum</button>'}
+          </div>
         </div>
-        <p class="title-hint">Microphone on · walk up to a character to talk</p>
-      </div>`;
+        <div class="ticket-stub"><span>ADMIT ONE</span><strong>№ ${String(1893 + Math.floor(Math.random() * 60)).padStart(4, '0')}</strong></div>
+      </div>
+      <p class="title-hint">Turn your sound and microphone on · walk up to anyone to talk</p>`;
     const input = this.title.querySelector('#player-name');
     const go = (mode) => {
       const name = (input.value || '').trim().slice(0, 18) || 'Visitor';
@@ -115,19 +121,18 @@ export class GameUI {
   // ----------------------------------------------------------------- tracker
   renderTracker(log) {
     const current = log.currentObjective();
-    const rank = log.rank;
-    const next = log.nextRank;
-    const progress = next ? (log.state.stars - rank.stars) / (next.stars - rank.stars) : 1;
-    let goal = '<span class="goal-done">All done — enjoy the museum</span>';
+    let html = '<span class="next-label">Complete</span><span class="next-text">Enjoy the museum</span>';
     if (current) {
       const { objective } = current;
-      const count = objective.count ? ` <span class="count">${log.objectiveProgress(objective)}/${objective.count}</span>` : '';
-      goal = `<span class="goal">${escapeHtml(objective.text)}${count}</span>`;
+      const count = objective.count ? `<span class="next-count">${log.objectiveProgress(objective)}/${objective.count}</span>` : '';
+      html = `<span class="next-label">Next</span><span class="next-text">${escapeHtml(objective.text)}</span>${count}`;
     }
-    this.tracker.innerHTML = `
-      <div class="rank"><span class="star">★</span><strong>${log.state.stars}</strong><span class="rank-title">${escapeHtml(rank.title)}</span></div>
-      <div class="rank-bar"><span style="width:${Math.round(progress * 100)}%"></span></div>
-      ${goal}`;
+    if (html === this.trackerHtml) return;
+    this.trackerHtml = html;
+    this.tracker.innerHTML = html;
+    this.tracker.classList.remove('changed');
+    void this.tracker.offsetWidth;
+    this.tracker.classList.add('changed');
   }
 
   // ----------------------------------------------------------------- compass
@@ -264,15 +269,20 @@ export class GameUI {
     }).join('');
     this.journal.classList.remove('hidden');
     this.journal.innerHTML = `
-      <div class="modal-card journal-card">
-        <header class="journal-head">
+      <div class="passport">
+        <button class="icon-btn close" title="Close (J)">✕</button>
+        <div class="passport-page left">
+          <p class="eyebrow">Visitor passport</p>
           <h2>${escapeHtml(log.name)}</h2>
-          <div class="pass-rank"><span class="star">★</span><strong>${log.state.stars}</strong><span>${escapeHtml(log.rank.title)}</span></div>
-          <button class="icon-btn close" title="Close (J)">✕</button>
-        </header>
-        <ul class="mission-list">${missions}</ul>
-        <div class="frag-grid">${fragments}</div>
-        <div class="stamps">${stamps}</div>
+          <p class="passport-rank"><span>★ ${log.state.stars}</span>${escapeHtml(log.rank.title)}</p>
+          <ul class="mission-list">${missions}</ul>
+        </div>
+        <div class="passport-page right">
+          <p class="eyebrow">Memories</p>
+          <div class="frag-grid">${fragments}</div>
+          <p class="eyebrow">Stamps</p>
+          <div class="stamps">${stamps}</div>
+        </div>
       </div>`;
     this.journal.querySelector('.close').addEventListener('click', () => this.closeJournal());
   }
@@ -338,7 +348,8 @@ export class GameUI {
     this.ending.classList.remove('hidden');
     this.ending.innerHTML = `
       <div class="modal-card certificate">
-        <p class="eyebrow">Certificate</p>
+        <div class="seal">★</div>
+        <p class="eyebrow">Certificate of achievement</p>
         <h2>Curator of Time</h2>
         <p class="recipient">${escapeHtml(log.name)}</p>
         <div class="cert-stats"><span><strong>${log.state.stars}</strong>stars</span><span><strong>${log.state.fragments.length}</strong>memories</span></div>

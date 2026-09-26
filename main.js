@@ -6,7 +6,8 @@ import { BrowserAudioInterface, ConversationAgent, InteractionType } from 'sarva
 import { FRAGMENTS, GAME_SUBTITLE, GAME_TITLE } from './src/content.js';
 import { MissionLog, loadSave } from './src/missions.js';
 import { GameUI } from './src/ui.js';
-import { createWorldExtras } from './src/world-extras.js';
+import { createWorldExtras, refreshTextTextures } from './src/world-extras.js';
+import { createDecor, refreshDecorText } from './src/world-decor.js';
 import { initAudio, sfx, toggleMute } from './src/audio.js';
 
 // Resolve files in public/ against Vite's base URL so the game also works when
@@ -21,7 +22,7 @@ scene.background = skyColor;
 scene.fog = new THREE.FogExp2(skyColor, 0.005); // Light atmospheric fog
 
 const camera = new THREE.PerspectiveCamera(64, innerWidth / innerHeight, 0.1, 250);
-camera.position.set(0, 2.2, 26); // Start outside the new entrance gate
+camera.position.set(0, 7.5, 30); // Title shot; the visit starts on the pavement outside the gate
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -121,29 +122,29 @@ function box(width, height, depth, x, y, z, material, castShadow = true) {
   return mesh;
 }
 
+const labelRedraws = [];
 function addLabel(text, x, y, z, rotation = 0, scale = 1) {
   const canvas = document.createElement('canvas');
   canvas.width = 768;
   canvas.height = 160;
   const context = canvas.getContext('2d');
-
-  // Clean minimalist dark board
-  context.fillStyle = '#111111';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Thin silver border
-  context.strokeStyle = '#cccccc';
-  context.lineWidth = 4;
-  context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
-
-  // Clean white sans-serif text
-  context.fillStyle = '#ffffff';
-  context.font = 'bold 56px "Inter", -apple-system, sans-serif';
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  context.fillText(text.toUpperCase(), canvas.width / 2, canvas.height / 2 + 4);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  const draw = () => {
+    context.fillStyle = '#16120e';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = '#c9a45c';
+    context.lineWidth = 4;
+    context.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+    context.fillStyle = '#f6efe2';
+    context.font = '600 58px "Bodoni Moda", Didot, Georgia, serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(text.toUpperCase(), canvas.width / 2, canvas.height / 2 + 4);
+    texture.needsUpdate = true;
+  };
+  draw();
+  labelRedraws.push(draw);
   const plaque = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 0.52), new THREE.MeshBasicMaterial({ map: texture }));
   plaque.position.set(x, y, z);
   plaque.rotation.y = rotation;
@@ -726,13 +727,13 @@ function setSpeaking(exhibit, isSpeaking) {
 // ============================================================================
 const ui = new GameUI(document.querySelector('#ui'));
 const extras = createWorldExtras({ scene, surfaceHeightAt });
+const decor = createDecor({ scene, colliders });
 let log = null; // MissionLog, created when the visit starts
 let gameStarted = false;
 let introProgress = 0; // camera glide from the title flyover to the gate
 const introFrom = new THREE.Vector3();
 let activeConversation = null; // { id, character }
 let voiceStatus = 'idle';
-let footstepDistance = 0;
 let currentInteractable = null;
 const bannerQueue = [];
 let bannerBusy = false;
@@ -766,18 +767,13 @@ function bindMissionEvents() {
   log.on((type, detail) => {
     if (type === 'objective' && detail.progress >= detail.target) {
       sfx.objective();
-      ui.toast(detail.objective.text, '✔');
-    } else if (type === 'rank') {
-      sfx.success();
-      ui.toast(detail.rank.title, '♛');
+      ui.toast(detail.objective.text, '✓');
     } else if (type === 'mission-complete') {
       sfx.success();
       if (detail.mission.id === 'welcome') {
         extras.showFragments(log.state.fragments);
         sfx.whoosh();
       }
-    } else if (type === 'mission-start') {
-      queueBanner('New mission', detail.mission.title);
     }
     ui.renderTracker(log);
   });
@@ -796,7 +792,8 @@ function startGame({ mode, name }) {
   introProgress = 0.0001;
   ui.setHudVisible(true);
   ui.renderTracker(log);
-  queueBanner(saved ? 'Welcome back' : 'Welcome', log.name);
+  queueBanner(saved ? 'Welcome back' : 'Welcome to the museum', log.name);
+  setTimeout(() => document.querySelector('.controls-card')?.classList.add('dim'), 15000);
 }
 
 // ------------------------------------------------------------ interaction
@@ -1036,9 +1033,9 @@ function takePhoto() {
     context.strokeRect(40, 40, width - 80, photoHeight);
     context.fillStyle = '#2a2116';
     context.textAlign = 'center';
-    context.font = '600 48px "Playfair Display", Georgia, serif';
+    context.font = '600 48px "Bodoni Moda", Didot, Georgia, serif';
     context.fillText(`${GAME_TITLE} — ${GAME_SUBTITLE}`, width / 2, photoHeight + 112);
-    context.font = '400 28px Inter, sans-serif';
+    context.font = '400 28px "Josefin Sans", Futura, sans-serif';
     context.fillStyle = '#6b5a40';
     const date = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
     context.fillText(`${log.name} · ${log.rank.title} · ${date}`, width / 2, photoHeight + 160);
@@ -1057,7 +1054,10 @@ function takePhoto() {
 window.addEventListener('keydown', (event) => {
   if (!gameStarted || introProgress < 1 || ui.isBlocking()) return;
   const key = event.key.toLowerCase();
-  if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) keys.add(key);
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+    keys.add(key);
+    event.preventDefault();
+  }
   if (key === ' ' && !isJumping) {
     jumpVelocity = 5.4;
     isJumping = true;
@@ -1115,7 +1115,8 @@ function updateGame(time, delta) {
   }
   // Objective beam and compass
   const target = objectiveTarget();
-  extras.setBeacon(target);
+  // The golden beam only marks the Timeline Wall; everything else is guided by the "Next" line.
+  extras.setBeacon(log.currentObjective()?.objective.target === 'timeline' ? target : null);
   const direction = new THREE.Vector3();
   camera.getWorldDirection(direction);
   const heading = Math.atan2(direction.x, -direction.z);
@@ -1350,8 +1351,8 @@ function updateGalleryDoors(delta) {
 }
 
 const PERSONAL_SPACE = 1.6; // closest the visitor can stand to a character
-const START_POSITION = new THREE.Vector3(0, 2.2, 26);
-const START_TARGET = new THREE.Vector3(0, 2.2, 25.99);
+const START_POSITION = new THREE.Vector3(0, 1.65, 22.9);
+const START_TARGET = new THREE.Vector3(0, 1.65, 22.89);
 const introLook = new THREE.Vector3();
 
 // Title shot: a slow sway in front of the museum, always facing the entrance
@@ -1366,7 +1367,7 @@ function updateIntroGlide(delta) {
   introProgress = Math.min(1, introProgress + delta / 2);
   const eased = introProgress < 0.5 ? 4 * introProgress ** 3 : 1 - (-2 * introProgress + 2) ** 3 / 2;
   camera.position.lerpVectors(introFrom, START_POSITION, eased);
-  introLook.set(0, 4.5, -10).lerp(new THREE.Vector3(0, 2.2, 14), eased);
+  introLook.set(0, 4.5, -10).lerp(new THREE.Vector3(0, 1.65, 12), eased);
   camera.lookAt(introLook);
   if (introProgress >= 1) {
     controls.target.copy(START_TARGET);
@@ -1380,10 +1381,10 @@ function updatePlayer(delta) {
   forward.normalize();
   sideways.crossVectors(camera.up, forward).normalize();
   const movement = new THREE.Vector3();
-  if (keys.has('w') || keys.has('arrowup')) movement.add(forward);
-  if (keys.has('s') || keys.has('arrowdown')) movement.sub(forward);
-  if (keys.has('a') || keys.has('arrowleft')) movement.add(sideways);
-  if (keys.has('d') || keys.has('arrowright')) movement.sub(sideways);
+  if (keys.has('arrowup')) movement.add(forward);
+  if (keys.has('arrowdown')) movement.sub(forward);
+  if (keys.has('arrowleft')) movement.add(sideways);
+  if (keys.has('arrowright')) movement.sub(sideways);
   if (isJumping) {
     jumpVelocity -= 15 * delta;
     const nextY = camera.position.y + jumpVelocity * delta;
@@ -1438,13 +1439,6 @@ function updatePlayer(delta) {
   const change = next.sub(camera.position);
   camera.position.add(change);
   controls.target.add(change);
-  if (!isJumping) {
-    footstepDistance += Math.hypot(change.x, change.z);
-    if (footstepDistance > 1.65) {
-      footstepDistance = 0;
-      sfx.step(camera.position.z < -3 ? 'stone' : 'grass');
-    }
-  }
 }
 
 function animate() {
@@ -1467,10 +1461,23 @@ function animate() {
   updateCharacters(elapsed, delta);
   updateGame(elapsed, delta);
   extras.update(elapsed, delta, camera.position);
+  decor.update(elapsed, delta);
   updateGalleryDoors(delta);
   if (playing) controls.update();
   renderer.render(scene, camera);
 }
+
+// Signs are painted onto canvases at startup, usually before the web fonts
+// arrive; repaint them once Bodoni Moda and Josefin Sans are ready.
+Promise.all([
+  document.fonts?.load("600 58px 'Bodoni Moda'"),
+  document.fonts?.load("italic 700 64px 'Bodoni Moda'"),
+  document.fonts?.load("700 40px 'Josefin Sans'"),
+]).then(() => {
+  labelRedraws.forEach((draw) => draw());
+  refreshTextTextures();
+  refreshDecorText();
+}).catch(() => {});
 
 ui.showTitle({
   hasSave: Boolean(loadSave()),

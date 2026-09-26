@@ -11,7 +11,7 @@ close, and the call ends when you walk away. Allow microphone access when the br
 
 | Key | Action |
 | --- | --- |
-| **W A S D** / arrows | Walk |
+| **Arrow keys** | Walk |
 | **Drag** | Look around |
 | **E** | Read a plaque, use the Timeline Wall |
 | **J** | Museum Journal |
@@ -49,7 +49,8 @@ Without Sarvam credentials the missions still work, but characters cannot talk.
 | `src/content.js` | Missions, fragments and plaques — all in-game text |
 | `src/missions.js` | Mission progress, stars, ranks and save data |
 | `src/ui.js` | Title screen, HUD, voice indicator, journal, timeline puzzle, certificate |
-| `src/world-extras.js` | Fragments, guidance beam, dust, Timeline Wall, plaques, confetti |
+| `src/world-extras.js` | Fragments, Timeline Wall (with its spotlight and beam), dust, plaques, confetti |
+| `src/world-decor.js` | Street traffic, lamps, trees, skyline, fountain, flags, banners, and the hall's carpet, ceiling, chandeliers, busts, paintings, ropes, benches and palms |
 | `src/audio.js` | Web Audio sound effects |
 | `public/*.glb` | Character and bush models (source: `einstein-custom.blend`) |
 | `tools/blender-mcp-bridge.js` | MCP bridge for editing the models in a running Blender session |

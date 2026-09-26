@@ -34,30 +34,41 @@ function beamTexture() {
   return texture;
 }
 
-function textTexture(lines, { width = 1024, height = 256, background = '#14110d', color = '#f5e6c4', font = '600 64px "Playfair Display", Georgia, serif', border = '#c9a45c' } = {}) {
+const textRedraws = [];
+/** Repaint every text texture (called once the web fonts have loaded). */
+export function refreshTextTextures() {
+  for (const redraw of textRedraws) redraw();
+}
+
+function textTexture(lines, { width = 1024, height = 256, background = '#14110d', color = '#f5e6c4', font = '600 64px "Bodoni Moda", Didot, Georgia, serif', border = '#c9a45c' } = {}) {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext('2d');
-  context.fillStyle = background;
-  context.fillRect(0, 0, width, height);
-  if (border) {
-    context.strokeStyle = border;
-    context.lineWidth = 6;
-    context.strokeRect(10, 10, width - 20, height - 20);
-  }
-  context.fillStyle = color;
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  const list = Array.isArray(lines) ? lines : [lines];
-  list.forEach((line, index) => {
-    context.font = typeof line === 'object' ? line.font : font;
-    const text = typeof line === 'object' ? line.text : line;
-    context.fillText(text, width / 2, height / 2 + (index - (list.length - 1) / 2) * (height / (list.length + 0.6)));
-  });
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
+  const draw = () => {
+    context.fillStyle = background;
+    context.fillRect(0, 0, width, height);
+    if (border) {
+      context.strokeStyle = border;
+      context.lineWidth = 6;
+      context.strokeRect(10, 10, width - 20, height - 20);
+    }
+    context.fillStyle = color;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    const list = Array.isArray(lines) ? lines : [lines];
+    list.forEach((line, index) => {
+      context.font = typeof line === 'object' ? line.font : font;
+      const text = typeof line === 'object' ? line.text : line;
+      context.fillText(text, width / 2, height / 2 + (index - (list.length - 1) / 2) * (height / (list.length + 0.6)));
+    });
+    texture.needsUpdate = true;
+  };
+  draw();
+  textRedraws.push(draw);
   return texture;
 }
 
@@ -87,11 +98,19 @@ function fragmentModel(fragment) {
       break;
     }
     case 'chalk': {
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.42, 14), standard('#f7f5ee', { ...glow, emissiveIntensity: 0.25 }));
-      stick.rotation.z = Math.PI / 2.6;
-      const board = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.36), new THREE.MeshBasicMaterial({ map: textTexture([{ text: 'E = mc²', font: 'italic 120px Georgia, serif' }], { width: 512, height: 300, background: '#1e3a2c', color: '#f4f1e6', border: '#6b4a2b' }), side: THREE.DoubleSide }));
-      board.position.set(0, 0.05, -0.08);
-      group.add(board, stick);
+      // A small blackboard with the chalk resting on its ledge (nothing overlaps the writing).
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.36, 0.03), [
+        standard('#5a3b22'), standard('#5a3b22'), standard('#5a3b22'), standard('#5a3b22'),
+        new THREE.MeshBasicMaterial({ map: textTexture([{ text: 'E = mc²', font: 'italic 120px Georgia, serif' }], { width: 512, height: 300, background: '#1e3a2c', color: '#f4f1e6', border: '#6b4a2b' }) }),
+        standard('#5a3b22'),
+      ]);
+      board.position.y = 0.06;
+      const ledge = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.03, 0.08), standard('#6b4a2b'));
+      ledge.position.set(0, -0.135, 0.03);
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.2, 12), standard('#f7f5ee', { ...glow, emissiveIntensity: 0.25 }));
+      stick.rotation.z = Math.PI / 2;
+      stick.position.set(0.12, -0.098, 0.04);
+      group.add(board, ledge, stick);
       break;
     }
     case 'medal': {
@@ -118,7 +137,7 @@ function fragmentModel(fragment) {
     }
     case 'badge':
     default: {
-      const face = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.03, 36), new THREE.MeshStandardMaterial({ map: textTexture([{ text: 'QUIT', font: '800 150px Inter, sans-serif' }, { text: 'INDIA', font: '800 150px Inter, sans-serif' }], { width: 512, height: 512, background: '#ff9f43', color: '#ffffff', border: '#ffffff' }), roughness: 0.4, emissive: new THREE.Color('#ff9f43'), emissiveIntensity: 0.2 }));
+      const face = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.03, 36), new THREE.MeshStandardMaterial({ map: textTexture([{ text: 'QUIT', font: '800 150px "Josefin Sans", Futura, sans-serif' }, { text: 'INDIA', font: '800 150px "Josefin Sans", Futura, sans-serif' }], { width: 512, height: 512, background: '#ff9f43', color: '#ffffff', border: '#ffffff' }), roughness: 0.4, emissive: new THREE.Color('#ff9f43'), emissiveIntensity: 0.2 }));
       face.rotation.x = Math.PI / 2;
       face.rotation.y = Math.PI / 2;
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.02, 10, 40), standard('#138808'));
@@ -153,7 +172,7 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
     const sparkleCount = 24;
     const sparklePositions = new Float32Array(sparkleCount * 3);
     sparkleGeometry.setAttribute('position', new THREE.BufferAttribute(sparklePositions, 3));
-    const sparkles = new THREE.Points(sparkleGeometry, new THREE.PointsMaterial({ color: fragment.color, size: 0.07, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
+    const sparkles = new THREE.Points(sparkleGeometry, new THREE.PointsMaterial({ map: glowMap, color: fragment.color, size: 0.12, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending }));
     root.add(ring, halo, model, sparkles);
     root.visible = false;
     scene.add(root);
@@ -188,7 +207,8 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
   }
   const dustGeometry = new THREE.BufferGeometry();
   dustGeometry.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
-  const dust = new THREE.Points(dustGeometry, new THREE.PointsMaterial({ color: '#fff2cf', size: 0.045, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  // Soft round motes (a glow sprite), not square pixels.
+  const dust = new THREE.Points(dustGeometry, new THREE.PointsMaterial({ map: glowMap, color: '#fff2cf', size: 0.05, transparent: true, opacity: 0.45, depthWrite: false, blending: THREE.AdditiveBlending }));
   scene.add(dust);
 
   // ------------------------------------------------------------ timeline wall
@@ -204,7 +224,7 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
     bar.position.set(x, y, 0.05);
     timeline.add(bar);
   }
-  const title = new THREE.Mesh(new THREE.PlaneGeometry(8, 0.9), new THREE.MeshBasicMaterial({ map: textTexture('THE TIMELINE OF HISTORY', { width: 1600, height: 180, font: '600 92px "Playfair Display", Georgia, serif' }), transparent: false }));
+  const title = new THREE.Mesh(new THREE.PlaneGeometry(8, 0.9), new THREE.MeshBasicMaterial({ map: textTexture('THE TIMELINE OF HISTORY', { width: 1600, height: 180, font: '600 92px "Bodoni Moda", Didot, Georgia, serif' }), transparent: false }));
   title.position.set(0, 5.05, 0.22);
   // The line of time running through the slots.
   const lineMaterial = new THREE.MeshStandardMaterial({ color: '#3a3326', emissive: new THREE.Color('#ffcf6b'), emissiveIntensity: 0 });
@@ -215,7 +235,7 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
     const x = -5.5 + index * 2.2;
     const niche = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 0.1), standard('#2a2730', { roughness: 0.6 }));
     niche.position.set(x, 3.3, 0.2);
-    const yearMaterial = new THREE.MeshBasicMaterial({ map: textTexture('?  ?  ?  ?', { width: 512, height: 160, font: '600 84px "Playfair Display", Georgia, serif', background: '#15131a', color: '#6f6656', border: null }) });
+    const yearMaterial = new THREE.MeshBasicMaterial({ map: textTexture('?  ?  ?  ?', { width: 512, height: 160, font: '600 84px "Bodoni Moda", Didot, Georgia, serif', background: '#15131a', color: '#6f6656', border: null }) });
     const year = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.45), yearMaterial);
     year.position.set(x, 1.65, 0.23);
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 12), lineMaterial);
@@ -234,22 +254,39 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
     timeline.add(shard);
     shards.push({ mesh: shard, home, spin: new THREE.Vector3(Math.random(), Math.random(), Math.random()).multiplyScalar(0.8), phase: Math.random() * 10 });
   }
-  const wallLight = new THREE.PointLight('#ffd38a', 0, 16, 2);
-  wallLight.position.set(0, 4, 3);
-  timeline.add(wallLight);
+  // The one spotlight in the hall: it picks out the Timeline Wall, and brightens once restored.
+  const wallLight = new THREE.SpotLight('#ffe2a8', 45, 22, 0.55, 0.6, 1.2);
+  wallLight.position.set(0, 9.5, 8);
+  wallLight.target.position.set(0, 3, 0);
+  timeline.add(wallLight, wallLight.target);
   timeline.traverse((child) => { if (child.isMesh) child.receiveShadow = true; });
   scene.add(timeline);
   let restoreProgress = 0; // 0 = broken, 1 = restored
   let restoring = false;
 
+  // Each restored memory sits still on its own brass shelf, scaled to fit inside
+  // its niche so nothing pokes into the wall or its neighbours.
+  const shelfMaterial = standard('#c9a45c', { metalness: 0.85, roughness: 0.3 });
   function placeInSlot(slot) {
     if (slot.model) return;
     const model = fragmentModel(slot.fragment);
-    model.position.set(slot.x, 3.3, 0.55);
-    model.scale.setScalar(1.8);
-    timeline.add(model);
+    const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+    const scale = Math.min(1.1 / Math.max(size.x, size.y), 0.5 / Math.max(size.z, 0.01));
+    model.scale.setScalar(scale);
+    const fitted = new THREE.Box3().setFromObject(model);
+    const shelfTop = 2.66;
+    const shelfFront = 0.62;
+    // Rest the model on the shelf, centred in the niche, with its back clear of the wall.
+    model.position.set(
+      slot.x - (fitted.min.x + fitted.max.x) / 2,
+      shelfTop - fitted.min.y + 0.01,
+      shelfFront - 0.08 - fitted.max.z,
+    );
+    const shelf = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.06, shelfFront - 0.2), shelfMaterial);
+    shelf.position.set(slot.x, shelfTop - 0.03, 0.2 + (shelfFront - 0.2) / 2);
+    timeline.add(shelf, model);
     slot.model = model;
-    slot.yearMaterial.map = textTexture(String(slot.fragment.year), { width: 512, height: 160, font: '700 96px "Playfair Display", Georgia, serif', background: '#15131a', color: '#ffd98a', border: null });
+    slot.yearMaterial.map = textTexture(String(slot.fragment.year), { width: 512, height: 160, font: '700 96px "Bodoni Moda", Didot, Georgia, serif', background: '#15131a', color: '#ffd98a', border: null });
     slot.yearMaterial.needsUpdate = true;
   }
 
@@ -264,7 +301,7 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
     const board = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.6, 0.05), standard('#15131a'));
     board.position.set(0, 1.15, 0);
     board.rotation.x = -0.5;
-    const face = new THREE.Mesh(new THREE.PlaneGeometry(0.88, 0.52), new THREE.MeshBasicMaterial({ map: textTexture([{ text: plaque.title.split(' (')[0], font: '600 64px "Playfair Display", Georgia, serif' }, { text: 'Press E to read', font: '400 44px Inter, sans-serif' }], { width: 768, height: 440 }) }));
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(0.88, 0.52), new THREE.MeshBasicMaterial({ map: textTexture([{ text: plaque.title.split(' (')[0], font: '600 64px "Bodoni Moda", Didot, Georgia, serif' }, { text: 'Press E to read', font: '400 44px "Josefin Sans", Futura, sans-serif' }], { width: 768, height: 440 }) }));
     face.position.set(0, 1.155, 0.03);
     face.rotation.x = -0.5;
     group.add(stand, board, face);
@@ -361,17 +398,16 @@ export function createWorldExtras({ scene, surfaceHeightAt }) {
       temp.copy(shard.home);
       temp.x += Math.sin(t * 0.5 + shard.phase) * 0.25 * drift;
       temp.y += Math.sin(t * 0.8 + shard.phase) * 0.2 * drift;
-      shard.mesh.position.copy(temp).lerp(new THREE.Vector3(shard.home.x * 0.95, 3.1 + (shard.home.y - 3.1) * 0.4, 0.15), eased);
+      // Restored: the shards fly back into the wall panel and disappear.
+      shard.mesh.position.copy(temp).lerp(new THREE.Vector3(shard.home.x * 0.95, 3.1 + (shard.home.y - 3.1) * 0.4, -0.1), eased);
+      shard.mesh.visible = eased < 0.98;
       shard.mesh.rotation.x += shard.spin.x * delta * drift;
       shard.mesh.rotation.y += shard.spin.y * delta * drift;
       shard.mesh.scale.setScalar(1 - eased * 0.85);
     }
     lineMaterial.emissiveIntensity = eased * (1.2 + Math.sin(t * 2) * 0.2);
-    wallLight.intensity = eased * 14;
+    wallLight.intensity = 45 + eased * 70;
     shardMaterial.emissiveIntensity = 0.18 + eased * 0.8;
-    for (const slot of slots) {
-      if (slot.model) slot.model.rotation.y = Math.sin(t * 0.8 + slot.x) * 0.5;
-    }
 
     if (confetti.visible) {
       let alive = 0;
