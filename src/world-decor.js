@@ -1,5 +1,5 @@
 // Scenery that makes the world feel alive: a busy street with traffic, lamps,
-// trees and a city skyline; a fountain, flags and banners on the grounds; and a
+// trees and a city skyline; a fountain on the grounds; and a
 // grand hall with a red carpet, chandeliers, busts, paintings and velvet ropes.
 import * as THREE from 'three';
 
@@ -218,40 +218,6 @@ function buildGrounds(scene, colliders, random, animated) {
     water.scale.setScalar(1 + Math.sin(time * 2) * 0.004);
   });
 
-  // Flags either side of the path.
-  const flagTexture = (a, b) => canvasTexture(256, 160, (context, w, h) => {
-    context.fillStyle = a;
-    context.fillRect(0, 0, w, h);
-    context.fillStyle = b;
-    context.fillRect(0, h * 0.42, w, h * 0.16);
-    context.beginPath();
-    context.arc(w / 2, h / 2, h * 0.2, 0, Math.PI * 2);
-    context.fill();
-  });
-  const flags = [];
-  for (const [x, a, b] of [[-9, '#7d1420', '#e8c47a'], [9, '#1f3f6b', '#e8c47a']]) {
-    const pole = mesh(new THREE.CylinderGeometry(0.06, 0.08, 9, 10), brass, x, 4.5, 17);
-    const top = mesh(new THREE.SphereGeometry(0.14, 12, 8), brass, x, 9.05, 17);
-    const geometry = new THREE.PlaneGeometry(2.4, 1.5, 16, 4);
-    geometry.translate(1.2, 0, 0);
-    const flag = mesh(geometry, new THREE.MeshStandardMaterial({ map: flagTexture(a, b), side: THREE.DoubleSide, roughness: 0.8 }), x + 0.06, 8.1, 17, { cast: false });
-    flag.userData.base = Float32Array.from(geometry.attributes.position.array);
-    scene.add(pole, top, flag);
-    flags.push(flag);
-    colliders.push({ minX: x - 0.2, maxX: x + 0.2, minZ: 16.8, maxZ: 17.2 });
-  }
-  animated.push((time) => {
-    for (const flag of flags) {
-      const position = flag.geometry.attributes.position;
-      const base = flag.userData.base;
-      for (let i = 0; i < position.count; i += 1) {
-        const x = base[i * 3];
-        position.array[i * 3 + 2] = Math.sin(x * 2.2 - time * 4) * 0.12 * (x / 2.4);
-      }
-      position.needsUpdate = true;
-    }
-  });
-
   // Trees in the side gardens.
   const trunkMat = mat('#5b3a24', { roughness: 0.9 });
   const leaf = mat('#356f40', { roughness: 0.85 });
@@ -265,29 +231,6 @@ function buildGrounds(scene, colliders, random, animated) {
       scene.add(group);
       colliders.push({ minX: x - 0.4, maxX: x + 0.4, minZ: z - 0.4, maxZ: z + 0.4 });
     }
-  }
-
-  // Banners on the museum facade, between the columns.
-  const banner = (lines, color) => canvasTexture(256, 768, (context, w, h) => {
-    context.fillStyle = color;
-    context.fillRect(0, 0, w, h);
-    context.strokeStyle = '#e8c47a';
-    context.lineWidth = 8;
-    context.strokeRect(16, 16, w - 32, h - 32);
-    context.fillStyle = '#f7ecd2';
-    context.textAlign = 'center';
-    context.font = '600 24px "Josefin Sans", Futura, sans-serif';
-    context.fillText('THE GRAND MUSEUM', w / 2, 80);
-    context.font = 'italic 700 60px "Bodoni Moda", Didot, Georgia, serif';
-    lines.forEach((line, i) => context.fillText(line, w / 2, h / 2 - 40 + i * 80));
-    context.font = '600 22px "Josefin Sans", Futura, sans-serif';
-    context.fillText('NOW SHOWING', w / 2, h - 70);
-  }, { text: true });
-  for (const [x, lines, color] of [[-12.75, ['Echoes', 'of History'], '#7d1420'], [-8.25, ['Mahatma', 'Gandhi'], '#8a4b14'], [8.25, ['Albert', 'Einstein'], '#1f3f6b'], [12.75, ['Echoes', 'of History'], '#7d1420']]) {
-    const plane = mesh(new THREE.PlaneGeometry(2.4, 7.2), new THREE.MeshStandardMaterial({ map: banner(lines, color), roughness: 0.8 }), x, 7.6, -3.7, { cast: false });
-    const rod = mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.7, 8), brass, x, 11.25, -3.68);
-    rod.rotation.z = Math.PI / 2;
-    scene.add(plane, rod);
   }
 }
 
