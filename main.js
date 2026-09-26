@@ -417,7 +417,7 @@ const TILE_OFFSET = 0.175; // The checkerboard hall tiles sit this far above the
 const RIGS = {
   guide: {
     facing: 1, // the face points along +Z in the model
-    head: /^Guide_(Head|Brow|Eye|Iris|Hair|Earring|Mouth|Nose)/,
+    head: /^Guide_(Head|Brow|Eye|Iris|Hair|Earring|Mouth|Lip|Teeth|Nose)/,
     leftArm: /^Guide_(Arm_L|Hand_L|Finger_L_\d|Thumb_L)$/,
     rightArm: /^Guide_(Arm_R|Hand_R|Finger_R_\d|Thumb_R)$/,
     leftLeg: /^Guide_(Leg|Shoe)_L$/,
@@ -425,12 +425,12 @@ const RIGS = {
     lowerBody: /^Guide_Skirt$/,
     eyes: /^Guide_(Eye|Iris)_[LR]$/,
     torso: 'Guide_Torso',
-    mouth: 'Guide_Mouth',
+    mouthPrefix: 'Guide_',
     armRest: 0.05,
   },
   gandhi: {
     facing: -1,
-    head: /^Gandhi_(Head|Ear|Eye|Glasses|Iris|Mouth|Nose)/,
+    head: /^Gandhi_(Head|Ear|Eye|Glasses|Iris|Mouth|Lip|Teeth|Nose)/,
     leftArm: /^Gandhi_(Arm|Hand|Finger_L_\d|Thumb_L)$/,
     rightArm: /^Gandhi_(Arm001|Hand001|Finger_R_\d|Thumb_R|Stick)$/,
     leftLeg: /^Gandhi_(Left_Leg|Shoe_L)$/,
@@ -438,21 +438,21 @@ const RIGS = {
     lowerBody: /^Gandhi_Dhoti$/,
     eyes: /^Gandhi_(Eye|Iris)_[LR]$/,
     torso: 'Gandhi_Torso',
-    mouth: 'Gandhi_Mouth',
+    mouthPrefix: 'Gandhi_',
     armRest: 0.08,
     rightArmSwing: 0.3, // the right hand holds his walking stick
     gestureArms: ['left'],
   },
   einstein: {
     facing: -1,
-    head: /^(Head|Cheek_|Ear_|Eye_|Eyebrow_|ForeheadLine_|Glasses|Hair_|HairStrand_|Iris_|LowerEyelid_|UpperEyelid_|Moustache|Mouth|Nose|SweptHair_)/,
+    head: /^(Head|Cheek_|Ear_|Eye_|Eyebrow_|ForeheadLine_|Glasses|Hair_|HairStrand_|Iris_|LowerEyelid_|UpperEyelid_|Moustache|Mouth|Lip_|Teeth|Nose|SweptHair_)/,
     leftArm: /^(Left_Arm|LCuff|Left_Hand|Finger_L_\d|Thumb_L)$/,
     rightArm: /^(Right_Arm|RCuff|Right_Hand|Finger_R_\d|Thumb_R)$/,
     leftLeg: /^(Left_Leg|Left_Shoe|Sole_L|Lace_L_\d)$/,
     rightLeg: /^(Right_Leg|Right_Shoe|Sole_R|Lace_R_\d)$/,
     eyes: /^(Eye|Iris)_[LR]$/,
     torso: 'Torso',
-    mouth: 'Mouth',
+    mouthPrefix: '',
     armRest: 0.08,
   },
 };
@@ -530,10 +530,38 @@ function buildRig(model, spec) {
   rig.rightArm = makeJoint(rig.upperBody, rightShoulder, groups.rightArm);
   rig.torso = container.getObjectByName(spec.torso);
   rig.torsoRestScale = rig.torso?.scale.clone();
-  rig.mouth = container.getObjectByName(spec.mouth);
-  rig.mouthRestScaleY = rig.mouth?.scale.y ?? 1;
+  rig.mouth = buildMouth(container, spec.mouthPrefix);
   rig.eyes = pick(spec.eyes).map((eye) => ({ eye, restScaleY: eye.scale.y }));
   return rig;
+}
+
+/**
+ * The mouth is made of an upper and lower lip in front of a dark mouth
+ * interior with a row of teeth. Speaking drops the lower lip (the jaw) and
+ * stretches the interior to fill the gap; the lips also narrow and widen a
+ * little between syllables.
+ */
+function buildMouth(container, prefix) {
+  const part = (name) => container.getObjectByName(`${prefix}${name}`);
+  const upper = part('Lip_Upper');
+  const lower = part('Lip_Lower');
+  const inner = part('Mouth_Inner');
+  if (!upper || !lower || !inner) return null;
+  const rest = (object) => ({ position: object.position.clone(), scale: object.scale.clone() });
+  return { upper, lower, inner, rest: { upper: rest(upper), lower: rest(lower), inner: rest(inner) }, lipHeight: upper.scale.y };
+}
+
+function animateMouth(mouth, open, shape) {
+  const { upper, lower, inner, rest, lipHeight } = mouth;
+  const drop = open * lipHeight * 4.5;
+  const width = 1 - open * 0.14 * shape;
+  lower.position.y = rest.lower.position.y - drop;
+  upper.position.y = rest.upper.position.y + open * lipHeight * 0.3;
+  inner.position.y = rest.inner.position.y - drop * 0.5;
+  inner.scale.y = rest.inner.scale.y + drop * 0.55;
+  for (const [object, base] of [[upper, rest.upper], [lower, rest.lower], [inner, rest.inner]]) {
+    object.scale.x = base.scale.x * width;
+  }
 }
 
 /**
@@ -568,7 +596,7 @@ function loadCharacter({ url, exhibit, rig, x, y = 0, z, roam, onLoad }) {
 }
 
 loadCharacter({
-  url: assetUrl('einstein-custom.glb?v=4'),
+  url: assetUrl('einstein-custom.glb?v=6'),
   exhibit: einsteinExhibit,
   rig: RIGS.einstein,
   x: -4,
@@ -578,7 +606,7 @@ loadCharacter({
 });
 
 loadCharacter({
-  url: assetUrl('gandhi-custom.glb?v=4'),
+  url: assetUrl('gandhi-custom.glb?v=6'),
   exhibit: gandhiExhibit,
   rig: RIGS.gandhi,
   x: 4,
@@ -588,7 +616,7 @@ loadCharacter({
 });
 
 loadCharacter({
-  url: assetUrl('guide-custom.glb?v=4'),
+  url: assetUrl('guide-custom.glb?v=6'),
   exhibit: guideExhibit,
   rig: RIGS.guide,
   x: -5.5,
@@ -974,8 +1002,11 @@ function animateCharacter(character, time, delta, distance) {
   for (const { eye, restScaleY } of rig.eyes) eye.scale.y = restScaleY * (1 - blink * 0.9);
 
   // --- Mouth follows the agent's audio level --------------------------------
-  anim.mouth = damp(anim.mouth, isSpeaking ? Math.max(sarvamOutputLevel, 0.15) : 0, 18, delta);
-  if (rig.mouth) rig.mouth.scale.y = rig.mouthRestScaleY * (1 + anim.mouth * 2.2);
+  // If no audio level is reported, fall back to a syllable-like rhythm.
+  const syllables = 0.3 + 0.3 * Math.sin(t * 9.5) * Math.sin(t * 3.3);
+  const mouthTarget = isSpeaking ? Math.min(1, Math.max(sarvamOutputLevel * 1.4, sarvamOutputLevel < 0.02 ? syllables : 0)) : 0;
+  anim.mouth = damp(anim.mouth, mouthTarget, 22, delta);
+  if (rig.mouth) animateMouth(rig.mouth, anim.mouth, 0.5 + 0.5 * Math.sin(t * 7.1));
 }
 
 function updateGalleryDoors(delta) {
